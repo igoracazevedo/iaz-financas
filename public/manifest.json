@@ -1,11 +1,33 @@
 {
-  "name": "IazFinanças — Controle Financeiro & Notas Fiscais",
-  "short_name": "IazFinanças",
-  "description": "Controle financeiro mensal, cartões, contas bancárias e leitura inteligente de cupons fiscais via IA.",
+  "id": "br.com.iaz.superfarma",
+  "name": "Super&Farma IAZ",
+  "short_name": "Super&Farma IAZ",
+  "description": "Gestão inteligente de compras de Supermercado, Farmácia, Notas Fiscais com IA, Garantias e Finanças.",
   "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#0f172a",
-  "theme_color": "#10b981",
+  "theme_color": "#0f172a",
   "orientation": "portrait-primary",
-  "icons": []
+  "categories": ["finance", "shopping", "productivity"],
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
 }

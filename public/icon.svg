@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="55%" stop-color="#064e3b" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399" />
+      <stop offset="100%" stop-color="#10b981" />
+    </linearGradient>
+    <linearGradient id="pharmaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818cf8" />
+      <stop offset="100%" stop-color="#4f46e5" />
+    </linearGradient>
+  </defs>
+  <!-- Background Rounded Square -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+  <rect x="16" y="16" width="480" height="480" rx="98" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="4" />
+
+  <!-- Pharmacy Cross Badge (Top Right) -->
+  <g transform="translate(310, 72)">
+    <rect x="0" y="0" width="124" height="124" rx="34" fill="url(#pharmaGrad)" stroke="#ffffff" stroke-width="6" />
+    <path d="M62 32v60M32 62h60" stroke="#ffffff" stroke-width="18" stroke-linecap="round" />
+  </g>
+
+  <!-- Supermarket Shopping Cart (Center-Left) -->
+  <g fill="none" stroke="url(#accentGrad)" stroke-width="26" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M76 130h46l42 168h168l36-112H144" />
+  </g>
+  <circle cx="182" cy="350" r="26" fill="#34d399" />
+  <circle cx="310" cy="350" r="26" fill="#34d399" />
+
+  <!-- AI Sparkle Star -->
+  <path d="M235 152 L245 182 L275 192 L245 202 L235 232 L225 202 L195 192 L225 182 Z" fill="#fde047" />
+
+  <!-- Bottom Label "SUPER&FARMA IAZ" -->
+  <rect x="66" y="402" width="380" height="58" rx="29" fill="#0f172a" fill-opacity="0.75" stroke="#34d399" stroke-opacity="0.4" stroke-width="2" />
+  <text x="256" y="440" font-family="system-ui, -apple-system, sans-serif" font-size="30" font-weight="900" fill="#ffffff" text-anchor="middle" letter-spacing="1.5">SUPER&amp;FARMA <tspan fill="#34d399">IAZ</tspan></text>
+</svg>

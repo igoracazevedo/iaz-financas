@@ -1,0 +1,8 @@
+{
+  "appId": "br.com.iaz.superfarma",
+  "appName": "Super&Farma IAZ",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}
