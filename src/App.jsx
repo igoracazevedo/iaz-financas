@@ -3,7 +3,6 @@ import { createClient } from '@supabase/supabase-js';
 import { GoogleGenAI } from '@google/genai';
 import {
   CreditCard,
-  ArrowUpCircle,
   ArrowDownCircle,
   Receipt,
   Plus,
@@ -17,6 +16,8 @@ import {
   Calendar,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
   AlertCircle,
   RefreshCw,
   X,
@@ -31,6 +32,8 @@ import {
   ShieldCheck,
   ShieldAlert,
   Store,
+  PieChart,
+  Filter,
 } from 'lucide-react';
 
 // ==========================================
@@ -62,15 +65,6 @@ const CATEGORIAS_DESPESA = [
   'Outros',
 ];
 
-const CATEGORIAS_RECEITA = [
-  'Salário',
-  'Pró-labore / Freelance',
-  'Rendimentos / Dividendos',
-  'Reembolso',
-  'Vendas',
-  'Outros',
-];
-
 const FORMAS_PAGAMENTO = [
   'PIX',
   'Cartão de Crédito',
@@ -91,6 +85,14 @@ const formatDateBR = (dateStr) => {
   const [y, m, d] = dateStr.split('T')[0].split('-');
   if (!y || !m || !d) return dateStr;
   return `${d}/${m}/${y}`;
+};
+
+const formatMonthLabel = (yyyyMm) => {
+  if (!yyyyMm) return '';
+  const [y, m] = yyyyMm.split('-').map(Number);
+  if (!y || !m) return yyyyMm;
+  const date = new Date(y, m - 1, 1);
+  return date.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
 };
 
 // Helpers para embutir/extrair garantia_meses com compatibilidade total no banco
@@ -164,8 +166,8 @@ const calcularStatusGarantia = (dataEmissaoStr, garantiaMeses) => {
 };
 
 export default function App() {
-  // Aba inicial: Notas IA ('notas')
-  const [activeTab, setActiveTab] = useState('notas');
+  // Aba inicial: Resumo do Mês ('resumo')
+  const [activeTab, setActiveTab] = useState('resumo');
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -192,12 +194,12 @@ export default function App() {
     ativo: true,
   });
 
-  // Estados de Formulários - Transações (Recebimentos e Pagamentos)
-  const emptyTransacao = (tipo) => ({
+  // Estados de Formulários - Pagamentos
+  const emptyPagamento = () => ({
     id: null,
-    tipo,
+    tipo: 'PAGAMENTO',
     descricao: '',
-    categoria: tipo === 'RECEBIMENTO' ? CATEGORIAS_RECEITA[0] : CATEGORIAS_DESPESA[0],
+    categoria: CATEGORIAS_DESPESA[0],
     valor: '',
     data_competencia: `${selectedMonth}-01`,
     data_pagamento: new Date().toISOString().split('T')[0],
@@ -206,7 +208,7 @@ export default function App() {
     cartao_id: '',
   });
 
-  const [transacaoForm, setTransacaoForm] = useState(() => emptyTransacao('PAGAMENTO'));
+  const [transacaoForm, setTransacaoForm] = useState(() => emptyPagamento());
   const [showTransacaoModal, setShowTransacaoModal] = useState(false);
 
   // Estados de Leitura e Edição de Notas Fiscais (OCR com Gemini)
@@ -220,7 +222,7 @@ export default function App() {
   const [searchItemQuery, setSearchItemQuery] = useState('');
   const [onlyWithWarranty, setOnlyWithWarranty] = useState(false);
 
-  // Estados da Aba Lista de Supermercado (persistida no localStorage)
+  // Estados da Aba Lista de Supermercado (inicia filtrando apenas 'Alimentação & Supermercado')
   const [shoppingList, setShoppingList] = useState(() => {
     try {
       const saved = localStorage.getItem('iaz_shopping_list');
@@ -230,6 +232,9 @@ export default function App() {
     }
   });
   const [catalogSearch, setCatalogSearch] = useState('');
+  const [catalogCategoryFilter, setCatalogCategoryFilter] = useState(
+    'Alimentação & Supermercado'
+  );
   const [customListItem, setCustomListItem] = useState({
     descricao_item: '',
     quantidade: 1,
@@ -250,6 +255,14 @@ export default function App() {
     setTimeout(() => setToast(null), 4000);
   };
 
+  const changeMonth = (offset) => {
+    const [y, m] = selectedMonth.split('-').map(Number);
+    const d = new Date(y, m - 1 + offset, 1);
+    setSelectedMonth(
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    );
+  };
+
   // ==========================================
   // CARREGAMENTO DE DADOS DO SUPABASE
   // ==========================================
@@ -264,8 +277,14 @@ export default function App() {
         { data: itensData, error: e5 },
       ] = await Promise.all([
         supabase.from('cartoes').select('*').order('created_at', { ascending: false }),
-        supabase.from('transacoes').select('*').order('data_competencia', { ascending: false }),
-        supabase.from('notas_fiscais').select('*').order('data_emissao', { ascending: false }),
+        supabase
+          .from('transacoes')
+          .select('*')
+          .order('data_competencia', { ascending: false }),
+        supabase
+          .from('notas_fiscais')
+          .select('*')
+          .order('data_emissao', { ascending: false }),
         supabase.from('itens_nota').select('*').order('created_at', { ascending: true }),
       ]);
 
@@ -290,67 +309,7 @@ export default function App() {
   }, []);
 
   // ==========================================
-  // FILTROS E RESUMO MENSAL
-  // ==========================================
-  const transacoesDoMes = useMemo(() => {
-    return transacoes.filter((t) => {
-      const dataRef = t.data_competencia || t.data_pagamento || '';
-      return dataRef.startsWith(selectedMonth);
-    });
-  }, [transacoes, selectedMonth]);
-
-  const recebimentosDoMes = useMemo(
-    () => transacoesDoMes.filter((t) => t.tipo === 'RECEBIMENTO'),
-    [transacoesDoMes]
-  );
-
-  const pagamentosDoMes = useMemo(
-    () => transacoesDoMes.filter((t) => t.tipo === 'PAGAMENTO'),
-    [transacoesDoMes]
-  );
-
-  const resumo = useMemo(() => {
-    const totalRecebimentos = recebimentosDoMes.reduce(
-      (acc, t) => acc + (Number(t.valor) || 0),
-      0
-    );
-    const totalRecebidoConfirmado = recebimentosDoMes
-      .filter(
-        (t) => t.status === 'CONFIRMADO' || t.status === 'RECEBIDO' || t.status === 'PAGO'
-      )
-      .reduce((acc, t) => acc + (Number(t.valor) || 0), 0);
-
-    const totalPagamentos = pagamentosDoMes.reduce(
-      (acc, t) => acc + (Number(t.valor) || 0),
-      0
-    );
-    const totalPagoConfirmado = pagamentosDoMes
-      .filter((t) => t.status === 'CONFIRMADO' || t.status === 'PAGO')
-      .reduce((acc, t) => acc + (Number(t.valor) || 0), 0);
-
-    const resultadoMes = totalRecebimentos - totalPagamentos;
-
-    const notasNoMes = notasFiscais.filter((nf) =>
-      (nf.data_emissao || '').startsWith(selectedMonth)
-    );
-    const totalNotasMes = notasNoMes.reduce(
-      (acc, nf) => acc + (Number(nf.valor_total) || 0),
-      0
-    );
-
-    return {
-      totalNotasMes,
-      qtdNotasMes: notasNoMes.length,
-      totalRecebimentos,
-      totalRecebidoConfirmado,
-      totalPagamentos,
-      totalPagoConfirmado,
-      resultadoMes,
-    };
-  }, [notasFiscais, recebimentosDoMes, pagamentosDoMes, selectedMonth]);
-
-  // ==========================================
-  // DADOS ENRIQUECIDOS DE ITENS (PARA BUSCA, GARANTIA E SUPERMERCADO)
+  // DADOS ENRIQUECIDOS DE ITENS (PARA BUSCA, GARANTIA, SUPERMERCADO E RESUMO)
   // ==========================================
   const itensEnriquecidos = useMemo(() => {
     const mapaNotas = new Map(notasFiscais.map((nf) => [nf.id, nf]));
@@ -376,6 +335,96 @@ export default function App() {
       });
   }, [itensNota, notasFiscais]);
 
+  // ==========================================
+  // CÁLCULOS DO RESUMO DO MÊS E PAGAMENTOS
+  // ==========================================
+  const pagamentosDoMes = useMemo(() => {
+    return transacoes.filter((t) => {
+      if (t.tipo !== 'PAGAMENTO') return false;
+      const dataRef = t.data_competencia || t.data_pagamento || '';
+      return dataRef.startsWith(selectedMonth);
+    });
+  }, [transacoes, selectedMonth]);
+
+  const notasDoMes = useMemo(() => {
+    return notasFiscais.filter((nf) =>
+      (nf.data_emissao || '').startsWith(selectedMonth)
+    );
+  }, [notasFiscais, selectedMonth]);
+
+  const resumoMensal = useMemo(() => {
+    const totalNotasMes = notasDoMes.reduce(
+      (acc, nf) => acc + (Number(nf.valor_total) || 0),
+      0
+    );
+
+    const totalPagamentosMes = pagamentosDoMes.reduce(
+      (acc, t) => acc + (Number(t.valor) || 0),
+      0
+    );
+
+    // Gasto por categoria no mês selecionado:
+    // Prioriza a soma detalhada por categoria dos itens das notas do mês + pagamentos avulsos sem nota vinculada
+    const idsTransacoesComNota = new Set(
+      notasFiscais.map((nf) => nf.transacao_id).filter(Boolean)
+    );
+    const idsNotasDoMes = new Set(notasDoMes.map((nf) => nf.id));
+
+    const mapaCategorias = new Map();
+
+    // 1. Soma itens das notas fiscais do mês por categoria_item
+    let somaItensNotasMes = 0;
+    for (const item of itensNota) {
+      if (idsNotasDoMes.has(item.nota_id)) {
+        const cat = item.categoria_item || 'Outros';
+        const val = Number(item.valor_total) || 0;
+        somaItensNotasMes += val;
+        mapaCategorias.set(cat, (mapaCategorias.get(cat) || 0) + val);
+      }
+    }
+
+    // Caso alguma nota não tenha itens detalhados cadastrados, usa a categoria da transação vinculada
+    for (const nf of notasDoMes) {
+      const temItens = itensNota.some((i) => i.nota_id === nf.id);
+      if (!temItens) {
+        const transVinc = transacoes.find((t) => t.id === nf.transacao_id);
+        const cat = transVinc?.categoria || 'Outros';
+        const val = Number(nf.valor_total) || 0;
+        mapaCategorias.set(cat, (mapaCategorias.get(cat) || 0) + val);
+      }
+    }
+
+    // 2. Soma pagamentos avulsos do mês (que não vieram de nota fiscal)
+    for (const pag of pagamentosDoMes) {
+      if (!idsTransacoesComNota.has(pag.id)) {
+        const cat = pag.categoria || 'Outros';
+        const val = Number(pag.valor) || 0;
+        mapaCategorias.set(cat, (mapaCategorias.get(cat) || 0) + val);
+      }
+    }
+
+    const totalCategorizado = Array.from(mapaCategorias.values()).reduce(
+      (a, b) => a + b,
+      0
+    );
+
+    const gastosPorCategoria = Array.from(mapaCategorias.entries())
+      .map(([categoria, valor]) => ({
+        categoria,
+        valor,
+        percentual: totalCategorizado > 0 ? (valor / totalCategorizado) * 100 : 0,
+      }))
+      .sort((a, b) => b.valor - a.valor);
+
+    return {
+      totalNotasMes,
+      qtdNotasMes: notasDoMes.length,
+      totalPagamentosMes,
+      totalCategorizado,
+      gastosPorCategoria,
+    };
+  }, [notasDoMes, pagamentosDoMes, notasFiscais, itensNota, transacoes]);
+
   // Itens filtrados na aba "Buscar Itens" em ordem decrescente de data
   const resultadosBuscaItens = useMemo(() => {
     const q = searchItemQuery.trim().toLowerCase();
@@ -390,10 +439,9 @@ export default function App() {
     });
   }, [itensEnriquecidos, searchItemQuery, onlyWithWarranty]);
 
-  // Catálogo de produtos únicos (com último preço e local) para a Lista de Supermercado
+  // Catálogo de produtos únicos para a Lista de Supermercado (com filtro de categoria que inicia em 'Alimentação & Supermercado')
   const catalogoSupermercado = useMemo(() => {
     const map = new Map();
-    // Como itensEnriquecidos já está em ordem decrescente de data, o primeiro encontrado é o mais recente
     for (const it of itensEnriquecidos) {
       const chave = String(it.descricao_item || '').trim().toUpperCase();
       if (!chave) continue;
@@ -402,19 +450,26 @@ export default function App() {
           chave,
           descricao_item: it.descricao_item,
           unidade: it.unidade || 'un',
-          ultimo_valor_unitario: Number(it.valor_unitario) || Number(it.valor_total) || 0,
+          ultimo_valor_unitario:
+            Number(it.valor_unitario) || Number(it.valor_total) || 0,
           ultimo_estabelecimento: it.estabelecimento,
           ultima_data: it.data_compra,
-          categoria_item: it.categoria_item,
+          categoria_item: it.categoria_item || 'Outros',
           historico_compras: 1,
         });
       } else {
         map.get(chave).historico_compras += 1;
       }
     }
-    const lista = Array.from(map.values()).sort((a, b) =>
+
+    let lista = Array.from(map.values()).sort((a, b) =>
       a.descricao_item.localeCompare(b.descricao_item)
     );
+
+    if (catalogCategoryFilter !== 'TODAS') {
+      lista = lista.filter((p) => p.categoria_item === catalogCategoryFilter);
+    }
+
     const q = catalogSearch.trim().toLowerCase();
     if (!q) return lista;
     return lista.filter(
@@ -422,7 +477,7 @@ export default function App() {
         p.descricao_item.toLowerCase().includes(q) ||
         p.ultimo_estabelecimento.toLowerCase().includes(q)
     );
-  }, [itensEnriquecidos, catalogSearch]);
+  }, [itensEnriquecidos, catalogSearch, catalogCategoryFilter]);
 
   // ==========================================
   // CRUD CARTÕES
@@ -483,11 +538,11 @@ export default function App() {
   };
 
   // ==========================================
-  // CRUD TRANSAÇÕES (RECEBIMENTOS / PAGAMENTOS)
+  // CRUD PAGAMENTOS DO MÊS
   // ==========================================
-  const openNewTransacaoModal = (tipo) => {
+  const openNewTransacaoModal = () => {
     setTransacaoForm({
-      ...emptyTransacao(tipo),
+      ...emptyPagamento(),
       data_competencia: `${selectedMonth}-${String(new Date().getDate()).padStart(2, '0')}`,
     });
     setShowTransacaoModal(true);
@@ -496,9 +551,9 @@ export default function App() {
   const openEditTransacaoModal = (t) => {
     setTransacaoForm({
       id: t.id,
-      tipo: t.tipo,
+      tipo: 'PAGAMENTO',
       descricao: t.descricao || '',
-      categoria: t.categoria || 'Outros',
+      categoria: t.categoria || CATEGORIAS_DESPESA[0],
       valor: t.valor ?? '',
       data_competencia: t.data_competencia || `${selectedMonth}-01`,
       data_pagamento: t.data_pagamento || '',
@@ -514,7 +569,7 @@ export default function App() {
     if (!supabase) return showNotice('Configure o Supabase no arquivo .env', 'error');
 
     const payload = {
-      tipo: transacaoForm.tipo,
+      tipo: 'PAGAMENTO',
       descricao: transacaoForm.descricao.trim(),
       categoria: transacaoForm.categoria,
       valor: Number(transacaoForm.valor) || 0,
@@ -532,16 +587,16 @@ export default function App() {
           .update(payload)
           .eq('id', transacaoForm.id);
         if (error) throw error;
-        showNotice('Lançamento atualizado com sucesso!');
+        showNotice('Pagamento atualizado com sucesso!');
       } else {
         const { error } = await supabase.from('transacoes').insert([payload]);
         if (error) throw error;
-        showNotice('Lançamento registrado com sucesso!');
+        showNotice('Pagamento registrado com sucesso!');
       }
       setShowTransacaoModal(false);
       fetchAllData();
     } catch (err) {
-      showNotice(`Erro ao salvar lançamento: ${err.message}`, 'error');
+      showNotice(`Erro ao salvar pagamento: ${err.message}`, 'error');
     }
   };
 
@@ -574,7 +629,7 @@ export default function App() {
     try {
       const { error } = await supabase.from('transacoes').delete().eq('id', id);
       if (error) throw error;
-      showNotice('Lançamento excluído!');
+      showNotice('Pagamento excluído!');
       fetchAllData();
     } catch (err) {
       showNotice(`Erro ao excluir: ${err.message}`, 'error');
@@ -919,7 +974,6 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
       }
 
       if (extractedNota.itens && extractedNota.itens.length > 0) {
-        // Tenta gravar usando a coluna garantia_meses (caso já criada via SQL) e embutindo tag segura em categoria_item
         const itensComColuna = extractedNota.itens.map((item) => ({
           nota_id: notaIdFinal,
           descricao_item: item.descricao_item || 'Item',
@@ -939,7 +993,6 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
           .insert(itensComColuna);
 
         if (errItens) {
-          // Fallback caso a coluna garantia_meses ainda não tenha sido adicionada via ALTER TABLE no Supabase
           const itensSemColunaExtra = extractedNota.itens.map((item) => ({
             nota_id: notaIdFinal,
             descricao_item: item.descricao_item || 'Item',
@@ -1074,14 +1127,14 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
   }, [shoppingList]);
 
   // ==========================================
-  // NAVEGAÇÃO (SEM CONTAS BANCÁRIAS, COM BUSCA E LISTA DE COMPRAS)
+  // NAVEGAÇÃO (RESUMO DO MÊS COMO INICIAL, SEM RECEBIMENTOS E SEM CONTAS)
   // ==========================================
   const navItems = [
+    { id: 'resumo', label: 'Resumo do Mês', icon: PieChart },
     { id: 'notas', label: 'Notas IA', icon: Receipt },
     { id: 'busca', label: 'Buscar Itens', icon: Search },
     { id: 'lista', label: 'Supermercado', icon: ShoppingCart },
     { id: 'pagamentos', label: 'Pagamentos', icon: ArrowDownCircle },
-    { id: 'recebimentos', label: 'Recebimentos', icon: ArrowUpCircle },
     { id: 'cartoes', label: 'Cartões', icon: CreditCard },
   ];
 
@@ -1115,7 +1168,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
           </div>
           <div>
             <h1 className="font-bold text-lg leading-tight">IazFinanças</h1>
-            <p className="text-xs text-slate-400">Notas IA, Garantias & Finanças</p>
+            <p className="text-xs text-slate-400">Notas IA, Garantias & Gastos</p>
           </div>
         </div>
 
@@ -1155,87 +1208,202 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
       {/* CONTEÚDO PRINCIPAL */}
       <main className="flex-1 md:pl-64">
         <div className="max-w-6xl mx-auto p-4 md:p-8 space-y-6">
-          {/* HEADER + SELETOR DE MÊS */}
-          <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          {/* CABEÇALHO SIMPLES DA TELA ATUAL (SEM OS CARDS GLOBAIS NO TOPO) */}
+          <header className="flex items-center justify-between">
             <div>
               <h2 className="text-2xl font-bold text-slate-900">
                 {navItems.find((i) => i.id === activeTab)?.label}
               </h2>
               <p className="text-sm text-slate-500">
-                Controle de notas fiscais, garantias de eletrônicos, histórico de preços e finanças
+                Controle inteligente de notas fiscais, garantias, supermercado e despesas
               </p>
             </div>
-
-            <div className="flex items-center gap-2 self-start sm:self-auto bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-2xs">
-              <Calendar className="w-4 h-4 text-slate-500" />
-              <input
-                type="month"
-                value={selectedMonth}
-                onChange={(e) => setSelectedMonth(e.target.value)}
-                className="text-sm font-medium text-slate-800 focus:outline-none bg-transparent"
-              />
-            </div>
+            <button
+              onClick={fetchAllData}
+              className="md:hidden p-2 rounded-xl bg-white border border-slate-200 text-slate-600"
+              title="Atualizar dados"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            </button>
           </header>
 
-          {/* CARDS DE RESUMO MENSAL */}
-          <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-2xs">
-              <div className="flex items-center justify-between text-slate-500 text-xs font-medium uppercase tracking-wider">
-                <span>Notas Fiscais ({selectedMonth})</span>
-                <Receipt className="w-4 h-4 text-slate-400" />
-              </div>
-              <p className="text-2xl font-bold text-slate-900 mt-2">
-                {formatCurrency(resumo.totalNotasMes)}
-              </p>
-              <p className="text-xs text-slate-500 mt-1">
-                {resumo.qtdNotasMes} nota(s) emitida(s) no mês
-              </p>
-            </div>
+          {/* ==========================================
+              ABA 1 (INICIAL): RESUMO DO MÊS
+          ========================================== */}
+          {activeTab === 'resumo' && (
+            <div className="space-y-6">
+              {/* CONTROLE DO CALENDÁRIO */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <span className="text-xs font-semibold uppercase tracking-wider text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full">
+                    Período Selecionado
+                  </span>
+                  <h3 className="text-xl font-bold text-slate-900 mt-2 capitalize">
+                    {formatMonthLabel(selectedMonth)}
+                  </h3>
+                </div>
 
-            <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-2xs">
-              <div className="flex items-center justify-between text-emerald-700 text-xs font-medium uppercase tracking-wider">
-                <span>Recebimentos ({selectedMonth})</span>
-                <ArrowUpCircle className="w-4 h-4 text-emerald-500" />
-              </div>
-              <p className="text-2xl font-bold text-emerald-600 mt-2">
-                {formatCurrency(resumo.totalRecebimentos)}
-              </p>
-              <p className="text-xs text-slate-500 mt-1">
-                Confirmado: {formatCurrency(resumo.totalRecebidoConfirmado)}
-              </p>
-            </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => changeMonth(-1)}
+                    className="p-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 cursor-pointer"
+                    title="Mês anterior"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
 
-            <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-2xs">
-              <div className="flex items-center justify-between text-rose-700 text-xs font-medium uppercase tracking-wider">
-                <span>Pagamentos ({selectedMonth})</span>
-                <ArrowDownCircle className="w-4 h-4 text-rose-500" />
-              </div>
-              <p className="text-2xl font-bold text-rose-600 mt-2">
-                {formatCurrency(resumo.totalPagamentos)}
-              </p>
-              <p className="text-xs text-slate-500 mt-1">
-                Confirmado: {formatCurrency(resumo.totalPagoConfirmado)}
-              </p>
-            </div>
+                  <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2">
+                    <Calendar className="w-4 h-4 text-emerald-600" />
+                    <input
+                      type="month"
+                      value={selectedMonth}
+                      onChange={(e) => setSelectedMonth(e.target.value)}
+                      className="text-sm font-semibold text-slate-800 focus:outline-none bg-transparent"
+                    />
+                  </div>
 
-            <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-2xs">
-              <div className="flex items-center justify-between text-slate-500 text-xs font-medium uppercase tracking-wider">
-                <span>Balanço do Mês</span>
-                <Sparkles className="w-4 h-4 text-indigo-500" />
+                  <button
+                    type="button"
+                    onClick={() => changeMonth(1)}
+                    className="p-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 cursor-pointer"
+                    title="Próximo mês"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
-              <p
-                className={`text-2xl font-bold mt-2 ${
-                  resumo.resultadoMes >= 0 ? 'text-emerald-600' : 'text-rose-600'
-                }`}
-              >
-                {formatCurrency(resumo.resultadoMes)}
-              </p>
-              <p className="text-xs text-slate-500 mt-1">Receitas menos despesas</p>
+
+              {/* CARDS PRINCIPAIS DO RESUMO DO MÊS */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-2xs flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Valor Gasto com Notas Fiscais ({selectedMonth})
+                    </span>
+                    <p className="text-3xl font-bold text-slate-900 mt-2">
+                      {formatCurrency(resumoMensal.totalNotasMes)}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      {resumoMensal.qtdNotasMes} nota(s) fiscal(is) registrada(s) no mês
+                    </p>
+                  </div>
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+                    <Receipt className="w-6 h-6" />
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-2xs flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Total Geral de Gastos no Mês
+                    </span>
+                    <p className="text-3xl font-bold text-rose-600 mt-2">
+                      {formatCurrency(resumoMensal.totalCategorizado)}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Soma de todas as categorias no período
+                    </p>
+                  </div>
+                  <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
+                    <PieChart className="w-6 h-6" />
+                  </div>
+                </div>
+              </div>
+
+              {/* GASTO POR CATEGORIA DE GASTO */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-2xs space-y-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="font-bold text-slate-900 text-base">
+                      Gasto por Categoria ({formatMonthLabel(selectedMonth)})
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Distribuição dos seus gastos por categoria no mês selecionado
+                    </p>
+                  </div>
+                </div>
+
+                {resumoMensal.gastosPorCategoria.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400 text-sm border border-dashed border-slate-200 rounded-xl">
+                    Nenhum gasto ou nota fiscal registrada em {selectedMonth}.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {resumoMensal.gastosPorCategoria.map((item) => (
+                      <div key={item.categoria} className="space-y-1.5">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="font-semibold text-slate-800">
+                            {item.categoria}
+                          </span>
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs font-medium text-slate-400">
+                              {item.percentual.toFixed(1)}%
+                            </span>
+                            <span className="font-bold text-slate-900">
+                              {formatCurrency(item.valor)}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-emerald-500 rounded-full transition-all"
+                            style={{ width: `${Math.min(100, item.percentual)}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* NOTAS FISCAIS DO MÊS SELECIONADO */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+                <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+                  <h3 className="font-bold text-slate-900 text-sm">
+                    Notas Fiscais de {formatMonthLabel(selectedMonth)} ({notasDoMes.length})
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('notas')}
+                    className="text-xs font-semibold text-emerald-600 hover:underline cursor-pointer"
+                  >
+                    + Escanear nova nota
+                  </button>
+                </div>
+
+                {notasDoMes.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400 text-sm">
+                    Nenhuma nota fiscal emitida neste mês.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {notasDoMes.map((nf) => (
+                      <div
+                        key={nf.id}
+                        className="p-4 sm:px-6 flex items-center justify-between gap-3 hover:bg-slate-50"
+                      >
+                        <div>
+                          <p className="font-semibold text-slate-900 text-sm">
+                            {nf.estabelecimento}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            {formatDateBR(nf.data_emissao)} • {nf.forma_pagamento || 'PIX'}
+                          </p>
+                        </div>
+                        <span className="font-bold text-slate-900 text-sm">
+                          {formatCurrency(nf.valor_total)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-          </section>
+          )}
 
           {/* ==========================================
-              ABA 1: LEITURA E GESTÃO DE NOTAS FISCAIS + GARANTIAS
+              ABA 2: LEITURA E GESTÃO DE NOTAS FISCAIS + GARANTIAS
           ========================================== */}
           {activeTab === 'notas' && (
             <div className="space-y-6">
@@ -1920,7 +2088,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
           )}
 
           {/* ==========================================
-              ABA 2: BUSCA DE ITENS E HISTÓRICO DE PREÇOS / GARANTIAS
+              ABA 3: BUSCA DE ITENS E HISTÓRICO DE PREÇOS / GARANTIAS
           ========================================== */}
           {activeTab === 'busca' && (
             <div className="space-y-6">
@@ -2040,7 +2208,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
           )}
 
           {/* ==========================================
-              ABA 3: LISTA DE SUPERMERCADO (PRÉVIA DE COMPRAS)
+              ABA 4: LISTA DE SUPERMERCADO (PRÉVIA DE COMPRAS)
           ========================================== */}
           {activeTab === 'lista' && (
             <div className="space-y-6">
@@ -2084,32 +2252,58 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                {/* CATÁLOGO DE ITENS JÁ CADASTRADOS NAS NOTAS */}
+                {/* CATÁLOGO DE ITENS JÁ CADASTRADOS NAS NOTAS (COM FILTRO DE CATEGORIA INICIANDO EM SUPERMERCADO) */}
                 <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4 self-start">
                   <div>
                     <h3 className="font-bold text-slate-900 text-sm">
-                      Itens já Cadastrados nas Notas ({catalogoSupermercado.length})
+                      Itens Cadastrados nas Notas ({catalogoSupermercado.length})
                     </h3>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Clique em <strong>+ Lista</strong> para adicionar com o último preço pago
+                      Inicia exibindo itens de Supermercado, mas você pode filtrar outras categorias abaixo
                     </p>
                   </div>
 
-                  <div className="relative">
-                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      placeholder="Filtrar itens das notas..."
-                      value={catalogSearch}
-                      onChange={(e) => setCatalogSearch(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs"
-                    />
+                  {/* FILTRO DE CATEGORIA + BUSCA POR TEXTO */}
+                  <div className="space-y-2">
+                    <div className="relative">
+                      <Filter className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <select
+                        value={catalogCategoryFilter}
+                        onChange={(e) => setCatalogCategoryFilter(e.target.value)}
+                        className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 text-xs font-medium bg-slate-50 text-slate-800"
+                      >
+                        <option value="Alimentação & Supermercado">
+                          Somente Supermercado (Alimentação & Supermercado)
+                        </option>
+                        <option value="TODAS">
+                          Todas as Categorias (Incluir Outros Itens)
+                        </option>
+                        {CATEGORIAS_DESPESA.filter(
+                          (c) => c !== 'Alimentação & Supermercado'
+                        ).map((cat) => (
+                          <option key={cat} value={cat}>
+                            Categoria: {cat}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="relative">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        placeholder="Buscar produto pelo nome..."
+                        value={catalogSearch}
+                        onChange={(e) => setCatalogSearch(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs"
+                      />
+                    </div>
                   </div>
 
                   <div className="max-h-96 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-xl">
                     {catalogoSupermercado.length === 0 ? (
                       <div className="p-6 text-center text-xs text-slate-400">
-                        Nenhum item encontrado no catálogo.
+                        Nenhum item encontrado nesta categoria.
                       </div>
                     ) : (
                       catalogoSupermercado.map((prod) => (
@@ -2122,7 +2316,8 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
                               {prod.descricao_item}
                             </p>
                             <p className="text-[11px] text-slate-500 truncate">
-                              Último: <strong>{formatCurrency(prod.ultimo_valor_unitario)}</strong> /
+                              Último:{' '}
+                              <strong>{formatCurrency(prod.ultimo_valor_unitario)}</strong> /
                               {prod.unidade} • {prod.ultimo_estabelecimento} (
                               {formatDateBR(prod.ultima_data)})
                             </p>
@@ -2341,52 +2536,48 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
           )}
 
           {/* ==========================================
-              ABA 4 & 5: PAGAMENTOS OU RECEBIMENTOS DO MÊS
+              ABA 5: PAGAMENTOS DO MÊS
           ========================================== */}
-          {(activeTab === 'recebimentos' || activeTab === 'pagamentos') && (
+          {activeTab === 'pagamentos' && (
             <section className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
               <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                <div>
-                  <h3 className="font-semibold text-slate-900">
-                    {activeTab === 'recebimentos'
-                      ? 'Recebimentos do Mês'
-                      : 'Pagamentos do Mês'}
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Competência selecionada: {selectedMonth}
-                  </p>
+                <div className="flex items-center gap-3">
+                  <div>
+                    <h3 className="font-semibold text-slate-900">Pagamentos do Mês</h3>
+                    <p className="text-xs text-slate-500">
+                      Total no mês: <strong>{formatCurrency(resumoMensal.totalPagamentosMes)}</strong>
+                    </p>
+                  </div>
                 </div>
 
-                <button
-                  onClick={() =>
-                    openNewTransacaoModal(
-                      activeTab === 'recebimentos' ? 'RECEBIMENTO' : 'PAGAMENTO'
-                    )
-                  }
-                  className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white shadow-xs cursor-pointer transition ${
-                    activeTab === 'recebimentos'
-                      ? 'bg-emerald-600 hover:bg-emerald-700'
-                      : 'bg-slate-900 hover:bg-slate-800'
-                  }`}
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>
-                    Novo {activeTab === 'recebimentos' ? 'Recebimento' : 'Pagamento'}
-                  </span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+                    <Calendar className="w-4 h-4 text-slate-500" />
+                    <input
+                      type="month"
+                      value={selectedMonth}
+                      onChange={(e) => setSelectedMonth(e.target.value)}
+                      className="text-xs font-semibold text-slate-800 focus:outline-none bg-transparent"
+                    />
+                  </div>
+
+                  <button
+                    onClick={openNewTransacaoModal}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 shadow-xs cursor-pointer transition"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Novo Pagamento</span>
+                  </button>
+                </div>
               </div>
 
               <div className="divide-y divide-slate-100">
-                {(activeTab === 'recebimentos' ? recebimentosDoMes : pagamentosDoMes)
-                  .length === 0 ? (
+                {pagamentosDoMes.length === 0 ? (
                   <div className="p-10 text-center text-slate-400 text-sm">
-                    Nenhum lançamento encontrado para {selectedMonth}.
+                    Nenhum pagamento encontrado para {selectedMonth}.
                   </div>
                 ) : (
-                  (activeTab === 'recebimentos'
-                    ? recebimentosDoMes
-                    : pagamentosDoMes
-                  ).map((t) => {
+                  pagamentosDoMes.map((t) => {
                     const isConcluido =
                       t.status === 'CONFIRMADO' ||
                       t.status === 'PAGO' ||
@@ -2432,15 +2623,8 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
 
                         <div className="flex items-center justify-between sm:justify-end gap-4 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
                           <div className="text-left sm:text-right">
-                            <p
-                              className={`font-bold text-sm ${
-                                t.tipo === 'RECEBIMENTO'
-                                  ? 'text-emerald-600'
-                                  : 'text-rose-600'
-                              }`}
-                            >
-                              {t.tipo === 'RECEBIMENTO' ? '+' : '-'}{' '}
-                              {formatCurrency(t.valor)}
+                            <p className="font-bold text-sm text-rose-600">
+                              - {formatCurrency(t.valor)}
                             </p>
                             <span
                               className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full ${
@@ -2750,7 +2934,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
         </div>
       )}
 
-      {/* MODAL DE NOVA / EDITAR TRANSAÇÃO */}
+      {/* MODAL DE NOVO / EDITAR PAGAMENTO */}
       {showTransacaoModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <form
@@ -2759,8 +2943,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
           >
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="font-bold text-slate-900">
-                {transacaoForm.id ? 'Editar' : 'Novo'}{' '}
-                {transacaoForm.tipo === 'RECEBIMENTO' ? 'Recebimento' : 'Pagamento'}
+                {transacaoForm.id ? 'Editar Pagamento' : 'Novo Pagamento'}
               </h3>
               <button
                 type="button"
@@ -2779,7 +2962,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
                 <input
                   type="text"
                   required
-                  placeholder="Ex: Salário Mensal, Supermercado, Energia..."
+                  placeholder="Ex: Supermercado, Energia, Internet..."
                   value={transacaoForm.descricao}
                   onChange={(e) =>
                     setTransacaoForm({ ...transacaoForm, descricao: e.target.value })
@@ -2817,10 +3000,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
                     }
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
                   >
-                    {(transacaoForm.tipo === 'RECEBIMENTO'
-                      ? CATEGORIAS_RECEITA
-                      : CATEGORIAS_DESPESA
-                    ).map((cat) => (
+                    {CATEGORIAS_DESPESA.map((cat) => (
                       <option key={cat} value={cat}>
                         {cat}
                       </option>
@@ -2850,7 +3030,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
 
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Data de Pagamento/Recebimento
+                    Data de Pagamento
                   </label>
                   <input
                     type="date"
@@ -2900,10 +3080,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
                     }
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
                   >
-                    <option value="CONFIRMADO">
-                      CONFIRMADO (
-                      {transacaoForm.tipo === 'RECEBIMENTO' ? 'Recebido' : 'Pago'})
-                    </option>
+                    <option value="CONFIRMADO">CONFIRMADO (Pago)</option>
                     <option value="PENDENTE">PENDENTE</option>
                   </select>
                 </div>
@@ -2942,7 +3119,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
                 type="submit"
                 className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer"
               >
-                Salvar Lançamento
+                Salvar Pagamento
               </button>
             </div>
           </form>
