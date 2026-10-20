@@ -90,7 +90,7 @@ const formatDateBR = (dateStr) => {
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('pagamentos');
+  const [activeTab, setActiveTab] = useState('notas');
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -628,13 +628,96 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
     }
   };
 
+  const handleEditNota = (nf) => {
+    const transacaoVinculada = transacoes.find((t) => t.id === nf.transacao_id);
+    const itensDaNota = itensNota
+      .filter((i) => i.nota_id === nf.id)
+      .map((i) => ({
+        descricao_item: i.descricao_item || '',
+        quantidade: Number(i.quantidade) || 1,
+        unidade: i.unidade || 'UN',
+        valor_unitario: Number(i.valor_unitario) || 0,
+        valor_total: Number(i.valor_total) || 0,
+        categoria_item: i.categoria_item || CATEGORIAS_DESPESA[0],
+      }));
+
+    setPreviewImage(nf.url_comprovante || null);
+    setExtractedNota({
+      id: nf.id,
+      transacao_id: nf.transacao_id || null,
+      estabelecimento: nf.estabelecimento || '',
+      cnpj: nf.cnpj || '',
+      data_emissao: (nf.data_emissao || new Date().toISOString()).split('T')[0],
+      valor_total: Number(nf.valor_total) || 0,
+      desconto: Number(nf.desconto) || 0,
+      forma_pagamento: nf.forma_pagamento || 'PIX',
+      chave_acesso: nf.chave_acesso || '',
+      categoria_geral: transacaoVinculada?.categoria || CATEGORIAS_DESPESA[0],
+      conta_id: transacaoVinculada?.conta_id || '',
+      cartao_id: transacaoVinculada?.cartao_id || '',
+      status_pagamento: transacaoVinculada?.status || 'CONFIRMADO',
+      itens: itensDaNota,
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleAttachComprovanteOnly = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const { dataUrl } = await fileToBase64(file);
+      setPreviewImage(dataUrl);
+      showNotice('Comprovante anexado! Clique em Salvar para gravar na nota.');
+    } catch (err) {
+      showNotice(`Erro ao anexar comprovante: ${err.message}`, 'error');
+    }
+  };
+
+  const handleItemChange = (idx, field, value) => {
+    if (!extractedNota) return;
+    const novosItens = [...extractedNota.itens];
+    const itemAtual = { ...novosItens[idx], [field]: value };
+    if (field === 'quantidade' || field === 'valor_unitario') {
+      const qtd = Number(field === 'quantidade' ? value : itemAtual.quantidade) || 0;
+      const unit = Number(field === 'valor_unitario' ? value : itemAtual.valor_unitario) || 0;
+      itemAtual.valor_total = Number((qtd * unit).toFixed(2));
+    }
+    novosItens[idx] = itemAtual;
+    setExtractedNota({ ...extractedNota, itens: novosItens });
+  };
+
+  const handleAddItemNota = () => {
+    if (!extractedNota) return;
+    setExtractedNota({
+      ...extractedNota,
+      itens: [
+        ...extractedNota.itens,
+        {
+          descricao_item: '',
+          quantidade: 1,
+          unidade: 'UN',
+          valor_unitario: 0,
+          valor_total: 0,
+          categoria_item: extractedNota.categoria_geral || CATEGORIAS_DESPESA[0],
+        },
+      ],
+    });
+  };
+
+  const handleRemoveItemNota = (idx) => {
+    if (!extractedNota) return;
+    setExtractedNota({
+      ...extractedNota,
+      itens: extractedNota.itens.filter((_, i) => i !== idx),
+    });
+  };
+
   const handleConfirmAndSaveNota = async (e) => {
     e.preventDefault();
     if (!supabase || !extractedNota) return;
 
     setOcrLoading(true);
     try {
-      // 1. Criar lançamento automático em transacoes (PAGAMENTO)
       const transacaoPayload = {
         tipo: 'PAGAMENTO',
         descricao: `NF: ${extractedNota.estabelecimento}`,
@@ -649,15 +732,24 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
         cartao_id: extractedNota.cartao_id || null,
       };
 
-      const { data: novaTransacao, error: errTrans } = await supabase
-        .from('transacoes')
-        .insert([transacaoPayload])
-        .select()
-        .single();
+      let transacaoIdFinal = extractedNota.transacao_id || null;
 
-      if (errTrans) throw errTrans;
+      if (extractedNota.id && transacaoIdFinal) {
+        const { error: errUpdTrans } = await supabase
+          .from('transacoes')
+          .update(transacaoPayload)
+          .eq('id', transacaoIdFinal);
+        if (errUpdTrans) throw errUpdTrans;
+      } else {
+        const { data: novaTransacao, error: errTrans } = await supabase
+          .from('transacoes')
+          .insert([transacaoPayload])
+          .select()
+          .single();
+        if (errTrans) throw errTrans;
+        transacaoIdFinal = novaTransacao.id;
+      }
 
-      // 2. Criar registro em notas_fiscais vinculado à transacao_id (salvando imagem/documento em url_comprovante)
       const notaPayload = {
         estabelecimento: extractedNota.estabelecimento,
         cnpj: extractedNota.cnpj,
@@ -667,21 +759,32 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
         forma_pagamento: extractedNota.forma_pagamento,
         chave_acesso: extractedNota.chave_acesso,
         url_comprovante: previewImage || null,
-        transacao_id: novaTransacao.id,
+        transacao_id: transacaoIdFinal,
       };
 
-      const { data: novaNota, error: errNota } = await supabase
-        .from('notas_fiscais')
-        .insert([notaPayload])
-        .select()
-        .single();
+      let notaIdFinal = extractedNota.id || null;
 
-      if (errNota) throw errNota;
+      if (extractedNota.id) {
+        const { error: errUpdNota } = await supabase
+          .from('notas_fiscais')
+          .update(notaPayload)
+          .eq('id', extractedNota.id);
+        if (errUpdNota) throw errUpdNota;
 
-      // 3. Inserir todos os itens em itens_nota
+        await supabase.from('itens_nota').delete().eq('nota_id', extractedNota.id);
+      } else {
+        const { data: novaNota, error: errNota } = await supabase
+          .from('notas_fiscais')
+          .insert([notaPayload])
+          .select()
+          .single();
+        if (errNota) throw errNota;
+        notaIdFinal = novaNota.id;
+      }
+
       if (extractedNota.itens && extractedNota.itens.length > 0) {
         const itensPayload = extractedNota.itens.map((item) => ({
-          nota_id: novaNota.id,
+          nota_id: notaIdFinal,
           descricao_item: item.descricao_item || 'Item',
           quantidade: Number(item.quantidade) || 1,
           unidade: item.unidade || 'UN',
@@ -694,7 +797,11 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
         if (errItens) throw errItens;
       }
 
-      showNotice('Nota fiscal, itens e pagamento lançados com sucesso!');
+      showNotice(
+        extractedNota.id
+          ? 'Nota fiscal, itens e pagamento atualizados com sucesso!'
+          : 'Nota fiscal, itens e pagamento lançados com sucesso!'
+      );
       setExtractedNota(null);
       setPreviewImage(null);
       fetchAllData();
@@ -725,9 +832,9 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
   // NAVEGAÇÃO (5 ABAS)
   // ==========================================
   const navItems = [
-    { id: 'recebimentos', label: 'Recebimentos', icon: ArrowUpCircle },
-    { id: 'pagamentos', label: 'Pagamentos', icon: ArrowDownCircle },
     { id: 'notas', label: 'Notas IA', icon: Receipt },
+    { id: 'pagamentos', label: 'Pagamentos', icon: ArrowDownCircle },
+    { id: 'recebimentos', label: 'Recebimentos', icon: ArrowUpCircle },
     { id: 'contas', label: 'Contas', icon: Wallet },
     { id: 'cartoes', label: 'Cartões', icon: CreditCard },
   ];
@@ -1111,7 +1218,11 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                     <div className="flex items-center justify-between">
                       <h4 className="font-bold text-slate-900 flex items-center gap-2">
                         <FileText className="w-4 h-4 text-emerald-600" />
-                        <span>Revisão dos Dados Extraídos</span>
+                        <span>
+                          {extractedNota.id
+                            ? `Editando Nota Fiscal: ${extractedNota.estabelecimento}`
+                            : 'Revisão dos Dados Extraídos'}
+                        </span>
                       </h4>
                       <button
                         type="button"
@@ -1126,21 +1237,36 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      {previewImage && (
-                        <div className="md:col-span-1">
+                      <div className="md:col-span-1 flex flex-col gap-2">
+                        {previewImage ? (
                           <img
                             src={previewImage}
                             alt="Cupom Fiscal"
-                            className="w-full max-h-72 object-contain rounded-xl border border-slate-200 bg-slate-50"
+                            className="w-full max-h-64 object-contain rounded-xl border border-slate-200 bg-slate-50"
                           />
-                        </div>
-                      )}
+                        ) : (
+                          <div className="w-full h-44 rounded-xl border border-dashed border-slate-300 bg-slate-50 flex flex-col items-center justify-center text-xs text-slate-400 p-4 text-center">
+                            <FileText className="w-6 h-6 mb-1 text-slate-300" />
+                            <span>Nenhum comprovante anexado</span>
+                          </div>
+                        )}
+                        <label className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-medium text-slate-700 cursor-pointer">
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>
+                            {previewImage
+                              ? 'Trocar Imagem / PDF da Nota'
+                              : 'Anexar Imagem / PDF da Nota'}
+                          </span>
+                          <input
+                            type="file"
+                            accept="image/*,application/pdf"
+                            onChange={handleAttachComprovanteOnly}
+                            className="hidden"
+                          />
+                        </label>
+                      </div>
 
-                      <div
-                        className={`${
-                          previewImage ? 'md:col-span-2' : 'md:col-span-3'
-                        } grid grid-cols-1 sm:grid-cols-2 gap-3`}
-                      >
+                      <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div>
                           <label className="block text-xs font-medium text-slate-600 mb-1">
                             Estabelecimento
@@ -1316,41 +1442,114 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                       </div>
                     </div>
 
-                    {/* ITENS EXTRAÍDOS DO CUPOM */}
+                    {/* ITENS EXTRAÍDOS / EDITÁVEIS DO CUPOM */}
                     <div>
-                      <h5 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
-                        Itens Identificados ({extractedNota.itens.length})
-                      </h5>
+                      <div className="flex items-center justify-between mb-2">
+                        <h5 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                          Itens da Nota ({extractedNota.itens.length})
+                        </h5>
+                        <button
+                          type="button"
+                          onClick={handleAddItemNota}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Adicionar Item</span>
+                        </button>
+                      </div>
                       <div className="border border-slate-200 rounded-xl overflow-x-auto">
                         <table className="w-full text-left text-xs">
                           <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
                             <tr>
-                              <th className="py-2.5 px-3">Item</th>
-                              <th className="py-2.5 px-3">Qtd</th>
-                              <th className="py-2.5 px-3">V. Unit</th>
-                              <th className="py-2.5 px-3">Total</th>
-                              <th className="py-2.5 px-3">Categoria IA</th>
+                              <th className="py-2.5 px-2 min-w-[160px]">Item</th>
+                              <th className="py-2.5 px-2 w-20">Qtd</th>
+                              <th className="py-2.5 px-2 w-16">Unid</th>
+                              <th className="py-2.5 px-2 w-24">V. Unit</th>
+                              <th className="py-2.5 px-2 w-24">Total</th>
+                              <th className="py-2.5 px-2 min-w-[160px]">Categoria</th>
+                              <th className="py-2.5 px-2 w-10"></th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
                             {extractedNota.itens.map((it, idx) => (
                               <tr key={idx}>
-                                <td className="py-2 px-3 font-medium text-slate-800">
-                                  {it.descricao_item}
+                                <td className="py-1.5 px-2">
+                                  <input
+                                    type="text"
+                                    value={it.descricao_item}
+                                    onChange={(e) =>
+                                      handleItemChange(idx, 'descricao_item', e.target.value)
+                                    }
+                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-800 font-medium"
+                                  />
                                 </td>
-                                <td className="py-2 px-3 text-slate-600">
-                                  {it.quantidade} {it.unidade}
+                                <td className="py-1.5 px-2">
+                                  <input
+                                    type="number"
+                                    step="0.001"
+                                    value={it.quantidade}
+                                    onChange={(e) =>
+                                      handleItemChange(idx, 'quantidade', e.target.value)
+                                    }
+                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-700"
+                                  />
                                 </td>
-                                <td className="py-2 px-3 text-slate-600">
-                                  {formatCurrency(it.valor_unitario)}
+                                <td className="py-1.5 px-2">
+                                  <input
+                                    type="text"
+                                    value={it.unidade}
+                                    onChange={(e) =>
+                                      handleItemChange(idx, 'unidade', e.target.value)
+                                    }
+                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-700"
+                                  />
                                 </td>
-                                <td className="py-2 px-3 font-semibold text-slate-900">
-                                  {formatCurrency(it.valor_total)}
+                                <td className="py-1.5 px-2">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={it.valor_unitario}
+                                    onChange={(e) =>
+                                      handleItemChange(idx, 'valor_unitario', e.target.value)
+                                    }
+                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-700"
+                                  />
                                 </td>
-                                <td className="py-2 px-3">
-                                  <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-md font-medium">
-                                    {it.categoria_item}
-                                  </span>
+                                <td className="py-1.5 px-2">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={it.valor_total}
+                                    onChange={(e) =>
+                                      handleItemChange(idx, 'valor_total', e.target.value)
+                                    }
+                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 font-semibold text-slate-900"
+                                  />
+                                </td>
+                                <td className="py-1.5 px-2">
+                                  <select
+                                    value={it.categoria_item}
+                                    onChange={(e) =>
+                                      handleItemChange(idx, 'categoria_item', e.target.value)
+                                    }
+                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 bg-white text-slate-700"
+                                  >
+                                    {CATEGORIAS_DESPESA.map((cat) => (
+                                      <option key={cat} value={cat}>
+                                        {cat}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td className="py-1.5 px-2 text-center">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveItemNota(idx)}
+                                    className="p-1 text-slate-400 hover:text-rose-600 rounded cursor-pointer"
+                                    title="Remover item"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
                                 </td>
                               </tr>
                             ))}
@@ -1366,7 +1565,11 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                         className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold text-sm shadow-sm cursor-pointer"
                       >
                         <Check className="w-4 h-4" />
-                        <span>Confirmar e Gerar Pagamento no Mês</span>
+                        <span>
+                          {extractedNota.id
+                            ? 'Salvar Alterações da Nota'
+                            : 'Confirmar e Gerar Pagamento no Mês'}
+                        </span>
                       </button>
                     </div>
                   </form>
@@ -1446,6 +1649,14 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                                 ) : (
                                   <ChevronDown className="w-4 h-4" />
                                 )}
+                              </button>
+
+                              <button
+                                onClick={() => handleEditNota(nf)}
+                                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
+                                title="Editar dados e itens da nota fiscal"
+                              >
+                                <Edit3 className="w-4 h-4" />
                               </button>
 
                               <button
