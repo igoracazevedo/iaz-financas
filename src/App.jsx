@@ -26,6 +26,8 @@ import {
   FileText,
   ShoppingBag,
   Upload,
+  Eye,
+  Download,
 } from 'lucide-react';
 
 // ==========================================
@@ -149,6 +151,7 @@ export default function App() {
   const [previewImage, setPreviewImage] = useState(null);
   const [extractedNota, setExtractedNota] = useState(null);
   const [expandedNotaId, setExpandedNotaId] = useState(null);
+  const [viewingComprovante, setViewingComprovante] = useState(null);
 
   const showNotice = (message, type = 'success') => {
     setToast({ message, type });
@@ -465,8 +468,48 @@ export default function App() {
       const reader = new FileReader();
       reader.onload = () => {
         const result = reader.result;
-        const base64Data = result.split(',')[1];
-        resolve({ base64Data, dataUrl: result, mimeType: file.type || 'image/jpeg' });
+        const mimeType = file.type || 'image/jpeg';
+        if (mimeType.startsWith('image/')) {
+          const img = new Image();
+          img.onload = () => {
+            const maxDim = 1280;
+            let { width, height } = img;
+            if (width > maxDim || height > maxDim) {
+              if (width > height) {
+                height = Math.round((height * maxDim) / width);
+                width = maxDim;
+              } else {
+                width = Math.round((width * maxDim) / height);
+                height = maxDim;
+              }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+            resolve({
+              base64Data: compressedDataUrl.split(',')[1],
+              dataUrl: compressedDataUrl,
+              mimeType: 'image/jpeg',
+            });
+          };
+          img.onerror = () => {
+            resolve({
+              base64Data: result.split(',')[1],
+              dataUrl: result,
+              mimeType,
+            });
+          };
+          img.src = result;
+        } else {
+          resolve({
+            base64Data: result.split(',')[1],
+            dataUrl: result,
+            mimeType,
+          });
+        }
       };
       reader.onerror = reject;
       reader.readAsDataURL(file);
@@ -614,7 +657,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
 
       if (errTrans) throw errTrans;
 
-      // 2. Criar registro em notas_fiscais vinculado à transacao_id
+      // 2. Criar registro em notas_fiscais vinculado à transacao_id (salvando imagem/documento em url_comprovante)
       const notaPayload = {
         estabelecimento: extractedNota.estabelecimento,
         cnpj: extractedNota.cnpj,
@@ -623,7 +666,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
         desconto: Number(extractedNota.desconto) || 0,
         forma_pagamento: extractedNota.forma_pagamento,
         chave_acesso: extractedNota.chave_acesso,
-        url_comprovante: null,
+        url_comprovante: previewImage || null,
         transacao_id: novaTransacao.id,
       };
 
@@ -1380,6 +1423,17 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                                 )}
                               </div>
 
+                              {nf.url_comprovante && (
+                                <button
+                                  onClick={() => setViewingComprovante(nf)}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg cursor-pointer"
+                                  title="Visualizar imagem/documento da nota fiscal"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  <span className="hidden sm:inline">Ver Nota</span>
+                                </button>
+                              )}
+
                               <button
                                 onClick={() =>
                                   setExpandedNotaId(isExpanded ? null : nf.id)
@@ -1866,6 +1920,57 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
           )}
         </div>
       </main>
+
+      {/* MODAL DE VISUALIZAÇÃO DO COMPROVANTE / NOTA FISCAL */}
+      {viewingComprovante && (
+        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-xl overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="font-bold text-slate-900 text-sm">
+                  {viewingComprovante.estabelecimento}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Emissão: {formatDateBR(viewingComprovante.data_emissao)} •{' '}
+                  {formatCurrency(viewingComprovante.valor_total)}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={viewingComprovante.url_comprovante}
+                  download={`nota-${viewingComprovante.estabelecimento}.jpg`}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Baixar</span>
+                </a>
+                <button
+                  onClick={() => setViewingComprovante(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 overflow-auto flex-1 bg-slate-50 flex items-center justify-center">
+              {viewingComprovante.url_comprovante?.startsWith('data:application/pdf') ? (
+                <iframe
+                  src={viewingComprovante.url_comprovante}
+                  title="Documento Nota Fiscal"
+                  className="w-full h-[70vh] rounded-lg border border-slate-200"
+                />
+              ) : (
+                <img
+                  src={viewingComprovante.url_comprovante}
+                  alt="Comprovante da Nota Fiscal"
+                  className="max-w-full max-h-[70vh] object-contain rounded-lg shadow-xs"
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL DE NOVA / EDITAR TRANSAÇÃO */}
       {showTransacaoModal && (
