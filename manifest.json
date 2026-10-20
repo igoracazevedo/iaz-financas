@@ -1,0 +1,11 @@
+{
+  "name": "IazFinanças — Controle Financeiro & Notas Fiscais",
+  "short_name": "IazFinanças",
+  "description": "Controle financeiro mensal, cartões, contas bancárias e leitura inteligente de cupons fiscais via IA.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#10b981",
+  "orientation": "portrait-primary",
+  "icons": []
+}
