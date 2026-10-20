@@ -54,6 +54,18 @@ const GEMINI_API_KEY =
     ? atob(__ENCODED_GEMINI_KEY__)
     : import.meta.env.VITE_GEMINI_API_KEY || '';
 
+// Lista de modelos Gemini com cotas independentes no Free Tier para rotação automática (anti-429)
+const MODELOS_GEMINI_POOL = [
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
+  'gemini-3-flash-preview',
+  'gemini-3.8-flash',
+];
+
+const modelosEsgotadosNaSessao = new Set();
+
 const supabase =
   SUPABASE_URL && SUPABASE_ANON_KEY
     ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -233,6 +245,58 @@ export default function App() {
   const [batchCategoryOverride, setBatchCategoryOverride] = useState('AUTO');
   const [batchCartaoId, setBatchCartaoId] = useState('');
   const [batchSkipDuplicates, setBatchSkipDuplicates] = useState(true);
+  const [activeGeminiModel, setActiveGeminiModel] = useState(MODELOS_GEMINI_POOL[0]);
+  const [customGeminiKey, setCustomGeminiKey] = useState(() => {
+    try {
+      return localStorage.getItem('iaz_custom_gemini_key') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const effectiveGeminiKey = customGeminiKey.trim() || GEMINI_API_KEY;
+
+  // Função central com rotação automática de modelos para nunca travar no erro 429 (Free Tier 20 req/dia por modelo)
+  const callGeminiWithFallback = async ({ input, response_format }) => {
+    const ai = new GoogleGenAI({ apiKey: effectiveGeminiKey });
+
+    // Ordena priorizando modelos que ainda não atingiram limite 429 na sessão
+    const candidatos = [
+      ...MODELOS_GEMINI_POOL.filter((m) => !modelosEsgotadosNaSessao.has(m)),
+      ...MODELOS_GEMINI_POOL.filter((m) => modelosEsgotadosNaSessao.has(m)),
+    ];
+
+    let lastError = null;
+    for (const modelName of candidatos) {
+      try {
+        const interaction = await ai.interactions.create({
+          model: modelName,
+          input,
+          response_format,
+        });
+        setActiveGeminiModel(modelName);
+        return interaction;
+      } catch (err) {
+        lastError = err;
+        const msg = String(err?.message || '');
+        if (
+          msg.includes('429') ||
+          msg.toLowerCase().includes('rate limit') ||
+          msg.toLowerCase().includes('quota') ||
+          msg.includes('404')
+        ) {
+          console.warn(
+            `[Gemini Fallback] Modelo ${modelName} atingiu limite/indisponível. Alternando automaticamente para o próximo modelo...`
+          );
+          modelosEsgotadosNaSessao.add(modelName);
+          continue;
+        }
+        // Para outros erros transitórios, aguarda 1.5s e tenta o próximo modelo
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+    throw lastError;
+  };
 
   // Estados da Aba de Busca de Itens
   const [searchItemQuery, setSearchItemQuery] = useState('');
@@ -825,8 +889,56 @@ export default function App() {
       reader.readAsDataURL(file);
     });
 
+  const NOTA_JSON_SCHEMA = {
+    type: 'object',
+    properties: {
+      estabelecimento: { type: 'string' },
+      cnpj: { type: 'string' },
+      data_emissao: { type: 'string' },
+      valor_total: { type: 'number' },
+      desconto: { type: 'number' },
+      forma_pagamento: { type: 'string' },
+      chave_acesso: { type: 'string' },
+      categoria_geral: { type: 'string' },
+      itens: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            descricao_item: { type: 'string' },
+            quantidade: { type: 'number' },
+            unidade: { type: 'string' },
+            valor_unitario: { type: 'number' },
+            valor_total: { type: 'number' },
+            categoria_item: { type: 'string' },
+            garantia_meses: { type: 'number' },
+          },
+          required: [
+            'descricao_item',
+            'quantidade',
+            'unidade',
+            'valor_unitario',
+            'valor_total',
+            'categoria_item',
+            'garantia_meses',
+          ],
+        },
+      },
+    },
+    required: [
+      'estabelecimento',
+      'cnpj',
+      'data_emissao',
+      'valor_total',
+      'desconto',
+      'forma_pagamento',
+      'chave_acesso',
+      'categoria_geral',
+      'itens',
+    ],
+  };
+
   const extrairNotaViaGemini = async (base64Data, mimeType, textContent = '') => {
-    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
     const promptInstrucao = `Analise esta Nota Fiscal / Cupom Fiscal brasileiro (NFC-e, NF-e, DANFE, XML ou SAT) e extraia todos os dados estruturados.
 Classifique cada item e a categoria geral usando uma destas categorias: ${CATEGORIAS_DESPESA.join(', ')}.
 Dica importante: se for supermercado/atacarejo/hortifruti/padaria, use "Alimentação & Supermercado"; se for farmácia/drogaria/medicamentos/higiene, use "Saúde & Farmácia".
@@ -853,77 +965,92 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
           },
         ];
 
-    let lastErr = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const interaction = await ai.interactions.create({
-          model: 'gemini-3.8-flash',
-          input: inputParts,
-          response_format: [
-            {
-              type: 'text',
-              mime_type: 'application/json',
-              schema: {
-                type: 'object',
-                properties: {
-                  estabelecimento: { type: 'string' },
-                  cnpj: { type: 'string' },
-                  data_emissao: { type: 'string' },
-                  valor_total: { type: 'number' },
-                  desconto: { type: 'number' },
-                  forma_pagamento: { type: 'string' },
-                  chave_acesso: { type: 'string' },
-                  categoria_geral: { type: 'string' },
-                  itens: {
-                    type: 'array',
-                    items: {
-                      type: 'object',
-                      properties: {
-                        descricao_item: { type: 'string' },
-                        quantidade: { type: 'number' },
-                        unidade: { type: 'string' },
-                        valor_unitario: { type: 'number' },
-                        valor_total: { type: 'number' },
-                        categoria_item: { type: 'string' },
-                        garantia_meses: { type: 'number' },
-                      },
-                      required: [
-                        'descricao_item',
-                        'quantidade',
-                        'unidade',
-                        'valor_unitario',
-                        'valor_total',
-                        'categoria_item',
-                        'garantia_meses',
-                      ],
-                    },
+    const interaction = await callGeminiWithFallback({
+      input: inputParts,
+      response_format: [
+        {
+          type: 'text',
+          mime_type: 'application/json',
+          schema: NOTA_JSON_SCHEMA,
+        },
+      ],
+    });
+
+    return JSON.parse(interaction.output_text || '{}');
+  };
+
+  // Extrai até 8 notas fiscais em UMA ÚNICA requisição Gemini (economiza 8x a cota da API!)
+  const extrairMultiplasNotasEmUmaRequisicao = async (arquivosPreparados) => {
+    if (arquivosPreparados.length === 1) {
+      const unico = arquivosPreparados[0];
+      const nota = await extrairNotaViaGemini(
+        unico.base64Data,
+        unico.mimeType,
+        unico.textContent
+      );
+      return [{ arquivo_index: 0, ...nota }];
+    }
+
+    const inputParts = [];
+    arquivosPreparados.forEach((arq, idx) => {
+      inputParts.push({
+        type: 'text',
+        text: `\n=== INÍCIO DA NOTA FISCAL [arquivo_index = ${idx}] (${arq.fileName}) ===`,
+      });
+      if (arq.textContent) {
+        inputParts.push({
+          type: 'text',
+          text: arq.textContent.slice(0, 30000),
+        });
+      } else {
+        inputParts.push({
+          type: arq.mimeType === 'application/pdf' ? 'document' : 'image',
+          mime_type: arq.mimeType,
+          data: arq.base64Data,
+        });
+      }
+    });
+
+    inputParts.push({
+      type: 'text',
+      text: `Você recebeu ${arquivosPreparados.length} Notas/Cupons Fiscais brasileiros acima, numerados com arquivo_index de 0 até ${
+        arquivosPreparados.length - 1
+      }.
+Extraia os dados estruturados de CADA UMA das ${arquivosPreparados.length} notas fiscais separadamente, mantendo exatamente o arquivo_index correspondente.
+Classifique cada item e a categoria geral usando uma destas categorias: ${CATEGORIAS_DESPESA.join(', ')}.
+Dica: supermercado/atacarejo/padaria = "Alimentação & Supermercado"; farmácia/drogaria/medicamentos = "Saúde & Farmácia".
+Para data_emissao use YYYY-MM-DD. Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
+    });
+
+    const interaction = await callGeminiWithFallback({
+      input: inputParts,
+      response_format: [
+        {
+          type: 'text',
+          mime_type: 'application/json',
+          schema: {
+            type: 'object',
+            properties: {
+              notas: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    arquivo_index: { type: 'number' },
+                    ...NOTA_JSON_SCHEMA.properties,
                   },
+                  required: ['arquivo_index', ...NOTA_JSON_SCHEMA.required],
                 },
-                required: [
-                  'estabelecimento',
-                  'cnpj',
-                  'data_emissao',
-                  'valor_total',
-                  'desconto',
-                  'forma_pagamento',
-                  'chave_acesso',
-                  'categoria_geral',
-                  'itens',
-                ],
               },
             },
-          ],
-        });
+            required: ['notas'],
+          },
+        },
+      ],
+    });
 
-        return JSON.parse(interaction.output_text || '{}');
-      } catch (err) {
-        lastErr = err;
-        if (attempt < 3) {
-          await new Promise((r) => setTimeout(r, attempt * 2000));
-        }
-      }
-    }
-    throw lastErr;
+    const parsed = JSON.parse(interaction.output_text || '{}');
+    return Array.isArray(parsed.notas) ? parsed.notas : [];
   };
 
   const handleFileUpload = async (e) => {
@@ -1214,7 +1341,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
       showNotice('Configure o Supabase no .env para salvar as notas.', 'error');
       return;
     }
-    if (!GEMINI_API_KEY) {
+    if (!effectiveGeminiKey) {
       showNotice('Configure VITE_GEMINI_API_KEY no .env para leitura com IA.', 'error');
       return;
     }
@@ -1228,131 +1355,198 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
         .filter((ch) => ch.length >= 20)
     );
 
-    let cursor = 0;
-    const concurrency = 2; // Processa 2 notas simultaneamente para velocidade e segurança contra rate-limit
     let savedCount = 0;
     let errorCount = 0;
     let duplicateCount = 0;
+    const today = new Date().toISOString().split('T')[0];
 
-    const worker = async () => {
-      while (cursor < itemsToRun.length) {
-        const currentIndex = cursor++;
-        const queueItem = itemsToRun[currentIndex];
-        if (!queueItem) continue;
-
+    const gravarNotaExtraidaDoItem = async (queueItem, parsed, dataUrl) => {
+      const chaveLimpa = String(parsed.chave_acesso || '').replace(/\D/g, '');
+      if (skipDuplicates && chaveLimpa.length >= 20 && chavesExistentes.has(chaveLimpa)) {
+        duplicateCount++;
         setBatchQueue((prev) =>
           prev.map((q) =>
             q.id === queueItem.id
-              ? { ...q, status: 'PROCESSANDO', errorMsg: '' }
+              ? {
+                  ...q,
+                  status: 'DUPLICADA',
+                  estabelecimento: parsed.estabelecimento || 'Nota já cadastrada',
+                  data_emissao: parsed.data_emissao || today,
+                  valor_total: Number(parsed.valor_total) || 0,
+                  qtd_itens: Array.isArray(parsed.itens) ? parsed.itens.length : 0,
+                  categoria:
+                    categoryOverride !== 'AUTO'
+                      ? categoryOverride
+                      : parsed.categoria_geral || CATEGORIAS_DESPESA[0],
+                }
               : q
           )
         );
+        return;
+      }
 
-        try {
-          const { base64Data, dataUrl, mimeType, textContent } = await fileToBase64(
-            queueItem.file
-          );
-          const parsed = await extrairNotaViaGemini(base64Data, mimeType, textContent);
-          const today = new Date().toISOString().split('T')[0];
+      if (chaveLimpa.length >= 20) {
+        chavesExistentes.add(chaveLimpa);
+      }
 
-          const chaveLimpa = String(parsed.chave_acesso || '').replace(/\D/g, '');
-          if (skipDuplicates && chaveLimpa.length >= 20 && chavesExistentes.has(chaveLimpa)) {
-            duplicateCount++;
+      const catFinal =
+        categoryOverride !== 'AUTO'
+          ? categoryOverride
+          : parsed.categoria_geral || CATEGORIAS_DESPESA[0];
+
+      const notaObj = {
+        estabelecimento:
+          parsed.estabelecimento || 'Estabelecimento Não Identificado',
+        cnpj: parsed.cnpj || '',
+        data_emissao: parsed.data_emissao || today,
+        valor_total: Number(parsed.valor_total) || 0,
+        desconto: Number(parsed.desconto) || 0,
+        forma_pagamento: parsed.forma_pagamento || 'PIX',
+        chave_acesso: parsed.chave_acesso || '',
+        categoria_geral: catFinal,
+        cartao_id: cartaoId || '',
+        status_pagamento: 'CONFIRMADO',
+        itens: Array.isArray(parsed.itens)
+          ? parsed.itens.map((it) => ({
+              ...it,
+              categoria_item:
+                categoryOverride !== 'AUTO'
+                  ? categoryOverride
+                  : it.categoria_item || catFinal,
+              garantia_meses: Number(it.garantia_meses) || 0,
+            }))
+          : [],
+      };
+
+      await salvarNotaCompletaNoBanco(notaObj, dataUrl);
+      savedCount++;
+
+      setBatchQueue((prev) =>
+        prev.map((q) =>
+          q.id === queueItem.id
+            ? {
+                ...q,
+                status: 'SUCESSO',
+                estabelecimento: notaObj.estabelecimento,
+                data_emissao: notaObj.data_emissao,
+                valor_total: notaObj.valor_total,
+                qtd_itens: notaObj.itens.length,
+                categoria: catFinal,
+              }
+            : q
+        )
+      );
+    };
+
+    // Agrupa as notas em pacotes de até 6 arquivos por chamada da IA:
+    // Assim, 50 notas fiscais gastam apenas ~9 requisições na API (em vez de 50!), evitando 429!
+    const CHUNK_SIZE = 6;
+    for (let start = 0; start < itemsToRun.length; start += CHUNK_SIZE) {
+      const chunk = itemsToRun.slice(start, start + CHUNK_SIZE);
+      const chunkIds = new Set(chunk.map((c) => c.id));
+
+      setBatchQueue((prev) =>
+        prev.map((q) =>
+          chunkIds.has(q.id) ? { ...q, status: 'PROCESSANDO', errorMsg: '' } : q
+        )
+      );
+
+      try {
+        // 1. Converte os arquivos do pacote para base64/texto
+        const preparados = await Promise.all(
+          chunk.map(async (qItem) => {
+            const fileData = await fileToBase64(qItem.file);
+            return {
+              queueItem: qItem,
+              fileName: qItem.fileName,
+              ...fileData,
+            };
+          })
+        );
+
+        // 2. Envia o pacote inteiro em UMA ÚNICA requisição com fallback automático de modelos
+        const notasExtraidas = await extrairMultiplasNotasEmUmaRequisicao(preparados);
+
+        // 3. Salva cada nota retornada no Supabase
+        for (let i = 0; i < preparados.length; i++) {
+          const prep = preparados[i];
+          const notaCorrespondente =
+            notasExtraidas.find((n) => Number(n.arquivo_index) === i) ||
+            notasExtraidas[i];
+
+          if (notaCorrespondente && notaCorrespondente.estabelecimento) {
+            try {
+              await gravarNotaExtraidaDoItem(
+                prep.queueItem,
+                notaCorrespondente,
+                prep.dataUrl
+              );
+            } catch (dbErr) {
+              errorCount++;
+              setBatchQueue((prev) =>
+                prev.map((q) =>
+                  q.id === prep.queueItem.id
+                    ? { ...q, status: 'ERRO', errorMsg: dbErr.message }
+                    : q
+                )
+              );
+            }
+          } else {
+            // Caso alguma nota específica do pacote não tenha vindo no array, processa individualmente
+            try {
+              const individualParsed = await extrairNotaViaGemini(
+                prep.base64Data,
+                prep.mimeType,
+                prep.textContent
+              );
+              await gravarNotaExtraidaDoItem(
+                prep.queueItem,
+                individualParsed,
+                prep.dataUrl
+              );
+            } catch (indErr) {
+              errorCount++;
+              setBatchQueue((prev) =>
+                prev.map((q) =>
+                  q.id === prep.queueItem.id
+                    ? { ...q, status: 'ERRO', errorMsg: indErr.message }
+                    : q
+                )
+              );
+            }
+          }
+        }
+      } catch (chunkErr) {
+        // Se o pacote inteiro falhou, tenta processar cada item do pacote com fallback de modelo
+        for (const qItem of chunk) {
+          try {
+            const { base64Data, dataUrl, mimeType, textContent } = await fileToBase64(
+              qItem.file
+            );
+            const parsed = await extrairNotaViaGemini(
+              base64Data,
+              mimeType,
+              textContent
+            );
+            await gravarNotaExtraidaDoItem(qItem, parsed, dataUrl);
+          } catch (err) {
+            console.error(`Erro no arquivo ${qItem.fileName}:`, err);
+            errorCount++;
             setBatchQueue((prev) =>
               prev.map((q) =>
-                q.id === queueItem.id
+                q.id === qItem.id
                   ? {
                       ...q,
-                      status: 'DUPLICADA',
-                      estabelecimento: parsed.estabelecimento || 'Nota já cadastrada',
-                      data_emissao: parsed.data_emissao || today,
-                      valor_total: Number(parsed.valor_total) || 0,
-                      qtd_itens: Array.isArray(parsed.itens) ? parsed.itens.length : 0,
-                      categoria:
-                        categoryOverride !== 'AUTO'
-                          ? categoryOverride
-                          : parsed.categoria_geral || CATEGORIAS_DESPESA[0],
+                      status: 'ERRO',
+                      errorMsg: err.message || 'Falha ao ler/salvar nota',
                     }
                   : q
               )
             );
-            continue;
           }
-
-          if (chaveLimpa.length >= 20) {
-            chavesExistentes.add(chaveLimpa);
-          }
-
-          const catFinal =
-            categoryOverride !== 'AUTO'
-              ? categoryOverride
-              : parsed.categoria_geral || CATEGORIAS_DESPESA[0];
-
-          const notaObj = {
-            estabelecimento:
-              parsed.estabelecimento || 'Estabelecimento Não Identificado',
-            cnpj: parsed.cnpj || '',
-            data_emissao: parsed.data_emissao || today,
-            valor_total: Number(parsed.valor_total) || 0,
-            desconto: Number(parsed.desconto) || 0,
-            forma_pagamento: parsed.forma_pagamento || 'PIX',
-            chave_acesso: parsed.chave_acesso || '',
-            categoria_geral: catFinal,
-            cartao_id: cartaoId || '',
-            status_pagamento: 'CONFIRMADO',
-            itens: Array.isArray(parsed.itens)
-              ? parsed.itens.map((it) => ({
-                  ...it,
-                  categoria_item:
-                    categoryOverride !== 'AUTO'
-                      ? categoryOverride
-                      : it.categoria_item || catFinal,
-                  garantia_meses: Number(it.garantia_meses) || 0,
-                }))
-              : [],
-          };
-
-          await salvarNotaCompletaNoBanco(notaObj, dataUrl);
-          savedCount++;
-
-          setBatchQueue((prev) =>
-            prev.map((q) =>
-              q.id === queueItem.id
-                ? {
-                    ...q,
-                    status: 'SUCESSO',
-                    estabelecimento: notaObj.estabelecimento,
-                    data_emissao: notaObj.data_emissao,
-                    valor_total: notaObj.valor_total,
-                    qtd_itens: notaObj.itens.length,
-                    categoria: catFinal,
-                  }
-                : q
-            )
-          );
-        } catch (err) {
-          console.error(`Erro no arquivo ${queueItem.fileName}:`, err);
-          errorCount++;
-          setBatchQueue((prev) =>
-            prev.map((q) =>
-              q.id === queueItem.id
-                ? {
-                    ...q,
-                    status: 'ERRO',
-                    errorMsg: err.message || 'Falha ao ler/salvar nota',
-                  }
-                : q
-            )
-          );
         }
       }
-    };
-
-    const workers = Array.from(
-      { length: Math.min(concurrency, itemsToRun.length) },
-      () => worker()
-    );
-    await Promise.all(workers);
+    }
 
     setBatchProcessing(false);
     await fetchAllData();
@@ -1616,7 +1810,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
 
   // 2. PREVISÃO DE LISTA DE COMPRAS E ANÁLISE DE CONSUMO COM IA
   const handlePredictShoppingListWithAI = async () => {
-    if (!GEMINI_API_KEY) {
+    if (!effectiveGeminiKey) {
       return showNotice('Configure VITE_GEMINI_API_KEY no .env', 'error');
     }
 
@@ -1633,7 +1827,6 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
 
     setAiListLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
       const resumoComprasAnteriores = itensHistoricoCategoria.slice(0, 120).map((i) => ({
         item: i.descricao_item,
         qtd: i.quantidade,
@@ -1653,8 +1846,7 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
         })),
       }));
 
-      const interaction = await ai.interactions.create({
-        model: 'gemini-3.8-flash',
+      const interaction = await callGeminiWithFallback({
         input: `Você é um assistente especialista em análise de consumo doméstico para ${
           currentListType === 'FARMACIA' ? 'Farmácia e Saúde' : 'Supermercado e Alimentação'
         }.
@@ -1734,8 +1926,6 @@ Tarefa:
 
   // 3. CONFERÊNCIA INTELIGENTE DA LISTA COM NOTA FISCAL (EQUIVALÊNCIA DE NOMES VIA IA)
   const executarConferenciaComNotaIA = async (dadosNota) => {
-    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-
     const listaPlanejada = currentShoppingList.map((i) => ({
       id: i.id,
       item_lista: i.descricao_item,
@@ -1752,8 +1942,7 @@ Tarefa:
       valor_total_item: Number(i.valor_total) || 0,
     }));
 
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.8-flash',
+    const interaction = await callGeminiWithFallback({
       input: `Compare a LISTA DE COMPRAS PLANEJADA pelo usuário com os ITENS DA NOTA FISCAL comprada no estabelecimento "${dadosNota.estabelecimento}".
 Lembre-se que as notas fiscais usam abreviações e nomes comerciais variados dependendo do estabelecimento (ex.: "Peito de Frango" na lista equivale a "FILE PEIT REGINA 70" na nota; "Carne Moída" equivale a "CARNE MOIDA PRIM"; "Dipirona" equivale a "DIPIRONA SOD 500MG").
 Identifique por equivalência semântica:
@@ -2307,13 +2496,16 @@ ${JSON.stringify(itensDaNota)}`,
                       <div>
                         <div className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-700 bg-indigo-100 px-2.5 py-1 rounded-full mb-1.5">
                           <Sparkles className="w-3.5 h-3.5" />
-                          <span>Importação Automática em Lote (Supermercado, Farmácia & Outros)</span>
+                          <span>
+                            Super-Lote Anti-Bloqueio 429 (6 notas/chamada • Modelo ativo:{' '}
+                            {activeGeminiModel})
+                          </span>
                         </div>
                         <h4 className="text-base font-bold text-slate-900">
                           Importar Múltiplas Notas Fiscais de Uma Vez (Ex: 50+ Notas)
                         </h4>
                         <p className="text-xs text-slate-600 mt-0.5">
-                          Selecione dezenas de fotos, PDFs ou XMLs de notas fiscais de uma só vez. A IA lê cada nota, classifica os itens (Supermercado, Farmácia, etc.) e grava tudo automaticamente no banco de dados.
+                          Agrupa até 6 notas numa única chamada da IA e alterna automaticamente entre 6 modelos Gemini caso algum atinja o limite diário gratuito de 20 requisições.
                         </p>
                       </div>
 
