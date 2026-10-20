@@ -736,7 +736,12 @@ export default function App() {
 
       setCartoes(cartoesData || []);
       setTransacoes(transacoesData || []);
-      setNotasFiscais(notasData || []);
+      setNotasFiscais(
+        (notasData || []).map((nf) => ({
+          ...nf,
+          data_emissao: (nf.data_emissao || '').split('T')[0],
+        }))
+      );
       setItensNota((itensData || []).map(decodeItemGarantia));
 
       // Decodifica o histórico de listas de compras salvo no banco
@@ -4566,17 +4571,11 @@ ${JSON.stringify(itensDaNota)}`,
                                 </p>
                                 <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-slate-500">
                                   {nf.cnpj && <span>CNPJ: {nf.cnpj}</span>}
-                                  <span className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded-md font-medium text-slate-700">
-                                    📅 Data:
-                                    <input
-                                      type="date"
-                                      value={nf.data_emissao || ''}
-                                      onChange={(e) =>
-                                        handleQuickUpdateNotaDate(nf, e.target.value)
-                                      }
-                                      className="bg-transparent font-semibold text-xs text-emerald-700 focus:outline-none cursor-pointer"
-                                      title="Clique para alterar a data desta nota imediatamente"
-                                    />
+                                  <span>
+                                    • Emissão:{' '}
+                                    <strong className="text-slate-700">
+                                      {formatDateBR(nf.data_emissao)}
+                                    </strong>
                                   </span>
                                   <span>• {nf.forma_pagamento || 'PIX'}</span>
                                   <span>• {itensDaNota.length} item(ns)</span>
