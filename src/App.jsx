@@ -48,6 +48,8 @@ import {
   KeyRound,
   Package,
   ExternalLink,
+  BarChart3,
+  TrendingUp,
 } from 'lucide-react';
 
 // ==========================================
@@ -125,6 +127,22 @@ const formatMonthLabel = (yyyyMm) => {
   if (!y || !m) return yyyyMm;
   const date = new Date(y, m - 1, 1);
   return date.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+};
+
+// Calcula Valor Total (Bruto), Desconto e Valor Pago (Total - Desconto) de uma Nota Fiscal
+const calcularValoresNota = (nf) => {
+  const valorTotalBruto = Math.max(0, Number(nf?.valor_total) || 0);
+  const desconto = Math.max(0, Number(nf?.desconto) || 0);
+  const valorPago = Math.max(
+    0,
+    Number((valorTotalBruto - desconto).toFixed(2))
+  );
+  return {
+    valorTotalBruto,
+    desconto,
+    valorPago,
+    temDesconto: desconto > 0.004,
+  };
 };
 
 // Mapa de UFs e portais SEFAZ para consulta de Chave de Acesso / QR Code
@@ -778,7 +796,7 @@ export default function App() {
   }, [itensNota, notasFiscais]);
 
   // ==========================================
-  // CÁLCULOS DO RESUMO DO MÊS E PAGAMENTOS
+  // CÁLCULOS DO RESUMO DO MÊS E PAGAMENTOS (CONSIDERANDO DESCONTO: VALOR PAGO = TOTAL - DESCONTO)
   // ==========================================
   const pagamentosDoMes = useMemo(() => {
     return transacoes.filter((t) => {
@@ -795,38 +813,66 @@ export default function App() {
   }, [notasFiscais, selectedMonth]);
 
   const resumoMensal = useMemo(() => {
-    const totalNotasMes = notasDoMes.reduce(
-      (acc, nf) => acc + (Number(nf.valor_total) || 0),
+    const totalBrutoNotasMes = notasDoMes.reduce(
+      (acc, nf) => acc + calcularValoresNota(nf).valorTotalBruto,
       0
     );
 
-    const totalPagamentosMes = pagamentosDoMes.reduce(
-      (acc, t) => acc + (Number(t.valor) || 0),
+    const totalDescontoNotasMes = notasDoMes.reduce(
+      (acc, nf) => acc + calcularValoresNota(nf).desconto,
       0
     );
+
+    // Valor efetivamente pago nas notas do mês = Total Bruto - Desconto
+    const totalNotasMes = notasDoMes.reduce(
+      (acc, nf) => acc + calcularValoresNota(nf).valorPago,
+      0
+    );
+
+    const mapaNotasPorTransacao = new Map(
+      notasFiscais
+        .filter((nf) => nf.transacao_id)
+        .map((nf) => [nf.transacao_id, nf])
+    );
+
+    const totalPagamentosMes = pagamentosDoMes.reduce((acc, t) => {
+      const nfVinculada = mapaNotasPorTransacao.get(t.id);
+      if (nfVinculada) {
+        return acc + calcularValoresNota(nfVinculada).valorPago;
+      }
+      return acc + (Number(t.valor) || 0);
+    }, 0);
 
     const idsTransacoesComNota = new Set(
       notasFiscais.map((nf) => nf.transacao_id).filter(Boolean)
     );
-    const idsNotasDoMes = new Set(notasDoMes.map((nf) => nf.id));
+    const mapaNotasDoMes = new Map(notasDoMes.map((nf) => [nf.id, nf]));
 
     const mapaCategorias = new Map();
 
-    for (const item of itensNota) {
-      if (idsNotasDoMes.has(item.nota_id)) {
-        const cat = item.categoria_item || 'Outros';
-        const val = Number(item.valor_total) || 0;
-        mapaCategorias.set(cat, (mapaCategorias.get(cat) || 0) + val);
-      }
-    }
-
+    // Soma os itens de cada nota do mês aplicando proporcionalmente o desconto da nota (se houver)
     for (const nf of notasDoMes) {
-      const temItens = itensNota.some((i) => i.nota_id === nf.id);
-      if (!temItens) {
+      const itensDestaNota = itensNota.filter((i) => i.nota_id === nf.id);
+      const { valorTotalBruto, valorPago } = calcularValoresNota(nf);
+
+      if (itensDestaNota.length > 0) {
+        const somaBrutaItens = itensDestaNota.reduce(
+          (acc, i) => acc + (Number(i.valor_total) || 0),
+          0
+        );
+        const baseBruta = somaBrutaItens > 0 ? somaBrutaItens : valorTotalBruto;
+        const fatorDesconto =
+          baseBruta > 0 && valorPago > 0 ? valorPago / baseBruta : 1;
+
+        for (const item of itensDestaNota) {
+          const cat = item.categoria_item || 'Outros';
+          const valLiquido = (Number(item.valor_total) || 0) * fatorDesconto;
+          mapaCategorias.set(cat, (mapaCategorias.get(cat) || 0) + valLiquido);
+        }
+      } else {
         const transVinc = transacoes.find((t) => t.id === nf.transacao_id);
         const cat = transVinc?.categoria || 'Outros';
-        const val = Number(nf.valor_total) || 0;
-        mapaCategorias.set(cat, (mapaCategorias.get(cat) || 0) + val);
+        mapaCategorias.set(cat, (mapaCategorias.get(cat) || 0) + valorPago);
       }
     }
 
@@ -852,6 +898,8 @@ export default function App() {
       .sort((a, b) => b.valor - a.valor);
 
     return {
+      totalBrutoNotasMes,
+      totalDescontoNotasMes,
       totalNotasMes,
       qtdNotasMes: notasDoMes.length,
       totalPagamentosMes,
@@ -874,31 +922,225 @@ export default function App() {
     });
   }, [itensEnriquecidos, searchItemQuery, onlyWithWarranty]);
 
-  // Catálogo de produtos únicos para Supermercado ou Farmácia
-  const catalogoProdutos = useMemo(() => {
+  // ==========================================
+  // ESTATÍSTICAS COMPLETAS DOS ITENS (MAIS COMPRADOS, FREQUÊNCIA, PREÇO MÉDIO E QUANTIDADE MÉDIA)
+  // ==========================================
+  const [statsSearch, setStatsSearch] = useState('');
+  const [statsCategoryFilter, setStatsCategoryFilter] = useState('TODAS');
+  const [statsSortBy, setStatsSortBy] = useState('MAIS_COMPRADOS');
+
+  const estatisticasItensCompleta = useMemo(() => {
     const map = new Map();
+
     for (const it of itensEnriquecidos) {
       const chave = String(it.descricao_item || '').trim().toUpperCase();
       if (!chave) continue;
+
+      const qtd = Number(it.quantidade) > 0 ? Number(it.quantidade) : 1;
+      const valTotal = Number(it.valor_total) || 0;
+      const valUnit =
+        Number(it.valor_unitario) > 0
+          ? Number(it.valor_unitario)
+          : qtd > 0
+          ? valTotal / qtd
+          : valTotal;
+      const dataCompra = (it.data_compra || '').split('T')[0];
+
       if (!map.has(chave)) {
         map.set(chave, {
           chave,
           descricao_item: it.descricao_item,
           unidade: it.unidade || 'un',
-          ultimo_valor_unitario:
-            Number(it.valor_unitario) || Number(it.valor_total) || 0,
-          ultimo_estabelecimento: it.estabelecimento,
-          ultima_data: it.data_compra,
           categoria_item: it.categoria_item || 'Outros',
-          historico_compras: 1,
+          ultimo_valor_unitario: valUnit,
+          ultimo_estabelecimento: it.estabelecimento || 'Local não informado',
+          ultima_data: dataCompra,
+          vezes_comprado: 1,
+          soma_quantidade: qtd,
+          soma_valor_unitario: valUnit,
+          soma_gasto_total: valTotal,
+          menor_preco: valUnit,
+          maior_preco: valUnit,
+          datas_compra: dataCompra ? [dataCompra] : [],
+          estabelecimentos_set: new Set(
+            it.estabelecimento ? [it.estabelecimento] : []
+          ),
         });
       } else {
-        map.get(chave).historico_compras += 1;
+        const entry = map.get(chave);
+        entry.vezes_comprado += 1;
+        entry.soma_quantidade += qtd;
+        entry.soma_valor_unitario += valUnit;
+        entry.soma_gasto_total += valTotal;
+        if (valUnit > 0 && (entry.menor_preco === 0 || valUnit < entry.menor_preco)) {
+          entry.menor_preco = valUnit;
+        }
+        if (valUnit > entry.maior_preco) {
+          entry.maior_preco = valUnit;
+        }
+        if (dataCompra) {
+          entry.datas_compra.push(dataCompra);
+        }
+        if (it.estabelecimento) {
+          entry.estabelecimentos_set.add(it.estabelecimento);
+        }
       }
     }
 
-    let lista = Array.from(map.values()).sort((a, b) =>
-      a.descricao_item.localeCompare(b.descricao_item)
+    return Array.from(map.values()).map((entry) => {
+      const vezes = Math.max(1, entry.vezes_comprado);
+      const precoMedio = Number((entry.soma_valor_unitario / vezes).toFixed(2));
+      const qtdMediaRaw = entry.soma_quantidade / vezes;
+      const unidUpper = String(entry.unidade || 'UN').trim().toUpperCase();
+      const isFracionado =
+        unidUpper === 'KG' ||
+        unidUpper === 'G' ||
+        unidUpper === 'L' ||
+        unidUpper === 'ML' ||
+        unidUpper === 'M' ||
+        !Number.isInteger(entry.soma_quantidade);
+
+      const quantidadeMedia = isFracionado
+        ? Number(qtdMediaRaw.toFixed(2))
+        : Math.max(1, Number(qtdMediaRaw.toFixed(1)));
+
+      // Cálculo de frequência de compra (intervalo médio em dias entre compras)
+      const datasUnicas = Array.from(new Set(entry.datas_compra))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+
+      let intervaloMedioDias = null;
+      let frequenciaTexto = '';
+
+      if (datasUnicas.length >= 2) {
+        const primeiraMs = new Date(`${datasUnicas[0]}T12:00:00`).getTime();
+        const ultimaMs = new Date(
+          `${datasUnicas[datasUnicas.length - 1]}T12:00:00`
+        ).getTime();
+        const diffDias = Math.max(
+          1,
+          Math.round((ultimaMs - primeiraMs) / (1000 * 60 * 60 * 24))
+        );
+        intervaloMedioDias = Math.max(
+          1,
+          Math.round(diffDias / (datasUnicas.length - 1))
+        );
+
+        if (intervaloMedioDias <= 8) {
+          frequenciaTexto = `Semanal (~a cada ${intervaloMedioDias}d)`;
+        } else if (intervaloMedioDias <= 18) {
+          frequenciaTexto = `Quinzenal (~a cada ${intervaloMedioDias}d)`;
+        } else if (intervaloMedioDias <= 35) {
+          frequenciaTexto = `Mensal (~a cada ${intervaloMedioDias}d)`;
+        } else {
+          frequenciaTexto = `A cada ~${intervaloMedioDias} dias`;
+        }
+      } else if (vezes > 1) {
+        frequenciaTexto = `${vezes}x comprados (mesmo dia/período)`;
+      } else {
+        frequenciaTexto = 'Compra única até o momento';
+      }
+
+      return {
+        chave: entry.chave,
+        descricao_item: entry.descricao_item,
+        unidade: entry.unidade,
+        categoria_item: entry.categoria_item,
+        ultimo_valor_unitario: entry.ultimo_valor_unitario,
+        ultimo_estabelecimento: entry.ultimo_estabelecimento,
+        ultima_data: entry.ultima_data,
+        historico_compras: vezes,
+        vezes_comprado: vezes,
+        quantidade_total: Number(entry.soma_quantidade.toFixed(3)),
+        quantidade_media: quantidadeMedia,
+        preco_medio: precoMedio,
+        menor_preco: Number(entry.menor_preco.toFixed(2)),
+        maior_preco: Number(entry.maior_preco.toFixed(2)),
+        gasto_total: Number(entry.soma_gasto_total.toFixed(2)),
+        intervalo_medio_dias: intervaloMedioDias,
+        frequencia_texto: frequenciaTexto,
+        estabelecimentos: Array.from(entry.estabelecimentos_set),
+      };
+    });
+  }, [itensEnriquecidos]);
+
+  const estatisticasFiltradas = useMemo(() => {
+    let lista = [...estatisticasItensCompleta];
+
+    if (statsCategoryFilter === 'DEMAIS') {
+      lista = lista.filter(
+        (p) =>
+          p.categoria_item !== 'Alimentação & Supermercado' &&
+          p.categoria_item !== 'Saúde & Farmácia'
+      );
+    } else if (statsCategoryFilter !== 'TODAS') {
+      lista = lista.filter((p) => p.categoria_item === statsCategoryFilter);
+    }
+
+    const q = statsSearch.trim().toLowerCase();
+    if (q) {
+      lista = lista.filter(
+        (p) =>
+          p.descricao_item.toLowerCase().includes(q) ||
+          p.estabelecimentos.some((e) => e.toLowerCase().includes(q)) ||
+          p.categoria_item.toLowerCase().includes(q)
+      );
+    }
+
+    lista.sort((a, b) => {
+      if (statsSortBy === 'MAIS_COMPRADOS') {
+        if (b.vezes_comprado !== a.vezes_comprado) {
+          return b.vezes_comprado - a.vezes_comprado;
+        }
+        return b.gasto_total - a.gasto_total;
+      }
+      if (statsSortBy === 'MAIOR_GASTO') {
+        return b.gasto_total - a.gasto_total;
+      }
+      if (statsSortBy === 'PRECO_MEDIO') {
+        return b.preco_medio - a.preco_medio;
+      }
+      if (statsSortBy === 'MENOR_CICLO') {
+        const cicloA = a.intervalo_medio_dias ?? 999999;
+        const cicloB = b.intervalo_medio_dias ?? 999999;
+        if (cicloA !== cicloB) return cicloA - cicloB;
+        return b.vezes_comprado - a.vezes_comprado;
+      }
+      return a.descricao_item.localeCompare(b.descricao_item);
+    });
+
+    return lista;
+  }, [estatisticasItensCompleta, statsCategoryFilter, statsSearch, statsSortBy]);
+
+  const resumoEstatisticas = useMemo(() => {
+    const totalItensUnicos = estatisticasFiltradas.length;
+    const itensRecorrentes = estatisticasFiltradas.filter(
+      (i) => i.vezes_comprado >= 2
+    ).length;
+    const maisComprado =
+      [...estatisticasFiltradas].sort(
+        (a, b) =>
+          b.vezes_comprado - a.vezes_comprado || b.gasto_total - a.gasto_total
+      )[0] || null;
+    const maiorGastoItem =
+      [...estatisticasFiltradas].sort(
+        (a, b) => b.gasto_total - a.gasto_total
+      )[0] || null;
+
+    return {
+      totalItensUnicos,
+      itensRecorrentes,
+      maisComprado,
+      maiorGastoItem,
+    };
+  }, [estatisticasFiltradas]);
+
+  // Catálogo de produtos únicos para Supermercado ou Farmácia (usando SEMPRE Preço Médio e Quantidade Média)
+  const catalogoProdutos = useMemo(() => {
+    let lista = [...estatisticasItensCompleta].sort(
+      (a, b) =>
+        b.vezes_comprado - a.vezes_comprado ||
+        a.descricao_item.localeCompare(b.descricao_item)
     );
 
     if (catalogCategoryFilter !== 'TODAS') {
@@ -912,7 +1154,7 @@ export default function App() {
         p.descricao_item.toLowerCase().includes(q) ||
         p.ultimo_estabelecimento.toLowerCase().includes(q)
     );
-  }, [itensEnriquecidos, catalogSearch, catalogCategoryFilter]);
+  }, [estatisticasItensCompleta, catalogSearch, catalogCategoryFilter]);
 
   const historicoListasDoTipo = useMemo(() => {
     return historicoListas.filter((l) => l.tipo === currentListType);
@@ -1493,11 +1735,13 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
   };
 
   const salvarNotaCompletaNoBanco = async (notaObj, dataUrlImagem) => {
+    const { valorTotalBruto, desconto, valorPago } = calcularValoresNota(notaObj);
+
     const transacaoPayload = {
       tipo: 'PAGAMENTO',
       descricao: `NF: ${notaObj.estabelecimento}`,
       categoria: notaObj.categoria_geral || CATEGORIAS_DESPESA[0],
-      valor: Number(notaObj.valor_total) || 0,
+      valor: valorPago,
       data_competencia: notaObj.data_emissao,
       data_pagamento:
         notaObj.status_pagamento === 'CONFIRMADO' ? notaObj.data_emissao : null,
@@ -2290,7 +2534,7 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
     const percentual = total > 0 ? Math.round((concluidos / total) * 100) : 0;
     const valorTotalImportado = batchQueue
       .filter((q) => q.status === 'SUCESSO')
-      .reduce((acc, q) => acc + (Number(q.valor_total) || 0), 0);
+      .reduce((acc, q) => acc + calcularValoresNota(q).valorPago, 0);
     const totalItensImportados = batchQueue
       .filter((q) => q.status === 'SUCESSO')
       .reduce((acc, q) => acc + (Number(q.qtd_itens) || 0), 0);
@@ -2311,9 +2555,21 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
 
   // ==========================================
   // FUNÇÕES INTELIGENTES DE LISTA DE COMPRAS (SUPERMERCADO & FARMÁCIA)
+  // SEMPRE USANDO PREÇO MÉDIO E QUANTIDADE MÉDIA COMPRADA
   // ==========================================
-  const addFromCatalogToShoppingList = (prod) => {
-    setCurrentShoppingList((prev) => {
+  const addFromCatalogToShoppingList = (prod, targetListType = null) => {
+    const tipoAlvo = targetListType || currentListType;
+    const setter =
+      tipoAlvo === 'FARMACIA' ? setShoppingListFarmacia : setShoppingListSupermercado;
+
+    const qtdMediaPadrao =
+      Number(prod.quantidade_media) > 0 ? Number(prod.quantidade_media) : 1;
+    const precoMedioPadrao =
+      Number(prod.preco_medio) > 0
+        ? Number(prod.preco_medio)
+        : Number(prod.ultimo_valor_unitario) || 0;
+
+    setter((prev) => {
       const existingIdx = prev.findIndex(
         (i) => i.descricao_item.trim().toUpperCase() === prod.chave
       );
@@ -2321,7 +2577,10 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
         const updated = [...prev];
         updated[existingIdx] = {
           ...updated[existingIdx],
-          quantidade: Number((Number(updated[existingIdx].quantidade) + 1).toFixed(3)),
+          quantidade: Number(
+            (Number(updated[existingIdx].quantidade) + qtdMediaPadrao).toFixed(3)
+          ),
+          valor_unitario: precoMedioPadrao,
         };
         return updated;
       }
@@ -2330,15 +2589,19 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
         {
           id: crypto.randomUUID(),
           descricao_item: prod.descricao_item,
-          quantidade: 1,
+          quantidade: qtdMediaPadrao,
           unidade: prod.unidade || 'un',
-          valor_unitario: Number(prod.ultimo_valor_unitario) || 0,
-          estabelecimento_ref: prod.ultimo_estabelecimento || '',
+          valor_unitario: precoMedioPadrao,
+          estabelecimento_ref: `Preço médio (${prod.vezes_comprado || 1}x) • Qtd média: ${qtdMediaPadrao} ${prod.unidade || 'un'} • ${prod.frequencia_texto || ''}`,
           checked: false,
         },
       ];
     });
-    showNotice(`"${prod.descricao_item}" adicionado à lista!`);
+    showNotice(
+      `"${prod.descricao_item}" adicionado com Qtd Média (${qtdMediaPadrao} ${
+        prod.unidade || 'un'
+      }) e Preço Médio (${formatCurrency(precoMedioPadrao)})!`
+    );
   };
 
   const handleAddCustomShoppingItem = (e) => {
@@ -2482,17 +2745,17 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
     }
   };
 
-  // 2. PREVISÃO DE LISTA DE COMPRAS E ANÁLISE DE CONSUMO COM IA
+  // 2. PREVISÃO DE LISTA DE COMPRAS E ANÁLISE DE CONSUMO COM IA (SEMPRE COM PREÇO MÉDIO E QUANTIDADE MÉDIA)
   const handlePredictShoppingListWithAI = async () => {
     if (!effectiveGeminiKey) {
       return showNotice('Configure VITE_GEMINI_API_KEY no .env', 'error');
     }
 
-    const itensHistoricoCategoria = itensEnriquecidos.filter(
+    const statsDaCategoria = estatisticasItensCompleta.filter(
       (i) => i.categoria_item === defaultCategoryForType
     );
 
-    if (itensHistoricoCategoria.length === 0 && historicoListasDoTipo.length === 0) {
+    if (statsDaCategoria.length === 0 && historicoListasDoTipo.length === 0) {
       return showNotice(
         `Ainda não há notas ou compras de ${defaultCategoryForType} cadastradas para a IA analisar seu consumo.`,
         'error'
@@ -2501,13 +2764,14 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
 
     setAiListLoading(true);
     try {
-      const resumoComprasAnteriores = itensHistoricoCategoria.slice(0, 120).map((i) => ({
-        item: i.descricao_item,
-        qtd: i.quantidade,
-        unidade: i.unidade,
-        valor_unitario: i.valor_unitario,
-        data: i.data_compra,
-        local: i.estabelecimento,
+      const resumoEstatisticasCategoria = statsDaCategoria.slice(0, 120).map((s) => ({
+        item: s.descricao_item,
+        vezes_comprado: s.vezes_comprado,
+        frequencia: s.frequencia_texto,
+        quantidade_media: s.quantidade_media,
+        unidade: s.unidade,
+        preco_medio: s.preco_medio,
+        ultima_compra: s.ultima_data,
       }));
 
       const resumoListasSalvas = historicoListasDoTipo.slice(0, 10).map((l) => ({
@@ -2525,15 +2789,15 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
           currentListType === 'FARMACIA' ? 'Farmácia e Saúde' : 'Supermercado e Alimentação'
         }.
 Hoje é ${new Date().toISOString().split('T')[0]}.
-Analise o histórico de compras extraído das Notas Fiscais do usuário:
-${JSON.stringify(resumoComprasAnteriores)}
+Analise as estatísticas históricas de consumo extraídas das Notas Fiscais do usuário (contendo frequência, quantidade_media e preco_medio de cada item):
+${JSON.stringify(resumoEstatisticasCategoria)}
 
 E o histórico de listas anteriores:
 ${JSON.stringify(resumoListasSalvas)}
 
 Tarefa:
 1. Faça uma breve análise do padrão de consumo do usuário (quais produtos ele mais consome, frequência/intervalo, e o que provavelmente precisa repor agora).
-2. Monte uma previsão de lista de compras ideal com os produtos recomendados, mantendo nomes claros e amigáveis, quantidades habituais e o último valor_unitario registrado.`,
+2. Monte uma previsão de lista de compras ideal com os produtos recomendados, utilizando OBRIGATORIAMENTE a quantidade_media comprada e o preco_medio de cada produto no histórico.`,
         response_format: [
           {
             type: 'text',
@@ -2570,15 +2834,32 @@ Tarefa:
       });
 
       const parsed = JSON.parse(interaction.output_text || '{}');
-      const novosItens = (parsed.itens_previstos || []).map((it) => ({
-        id: crypto.randomUUID(),
-        descricao_item: it.descricao_item,
-        quantidade: Number(it.quantidade) || 1,
-        unidade: it.unidade || 'un',
-        valor_unitario: Number(it.valor_unitario) || 0,
-        estabelecimento_ref: `IA: ${it.motivo_ia || 'Reposição sugerida'}`,
-        checked: false,
-      }));
+      const mapaStats = new Map(
+        estatisticasItensCompleta.map((s) => [s.chave, s])
+      );
+
+      const novosItens = (parsed.itens_previstos || []).map((it) => {
+        const chave = String(it.descricao_item || '').trim().toUpperCase();
+        const statMatch = mapaStats.get(chave);
+        const qtdFinal = statMatch
+          ? statMatch.quantidade_media
+          : Number(it.quantidade) || 1;
+        const precoFinal = statMatch
+          ? statMatch.preco_medio
+          : Number(it.valor_unitario) || 0;
+
+        return {
+          id: crypto.randomUUID(),
+          descricao_item: it.descricao_item,
+          quantidade: qtdFinal,
+          unidade: statMatch?.unidade || it.unidade || 'un',
+          valor_unitario: precoFinal,
+          estabelecimento_ref: `IA (Preço e Qtd Média): ${
+            it.motivo_ia || statMatch?.frequencia_texto || 'Reposição sugerida'
+          }`,
+          checked: false,
+        };
+      });
 
       setCurrentShoppingList(novosItens);
       updateCurrentMeta({
@@ -2589,7 +2870,9 @@ Tarefa:
             currentListType === 'FARMACIA' ? 'Farmácia' : 'Supermercado'
           }`,
       });
-      showNotice('Lista inteligente gerada pela IA com base no seu histórico de consumo!');
+      showNotice(
+        'Lista inteligente gerada pela IA com Preço Médio e Quantidade Média do seu histórico!'
+      );
     } catch (err) {
       console.error('Erro ao prever lista com IA:', err);
       showNotice(`Erro na análise de consumo IA: ${err.message}`, 'error');
@@ -2717,7 +3000,9 @@ ${JSON.stringify(itensDaNota)}`,
       data_conferencia: new Date().toISOString().split('T')[0],
       estabelecimento: dadosNota.estabelecimento,
       data_nota: dadosNota.data_emissao,
-      valor_total_nota: Number(dadosNota.valor_total) || 0,
+      valor_bruto_nota: calcularValoresNota(dadosNota).valorTotalBruto,
+      desconto_nota: calcularValoresNota(dadosNota).desconto,
+      valor_total_nota: calcularValoresNota(dadosNota).valorPago,
       insight_consumo: resultado.insight_consumo || '',
       comprados: resultado.comprados || [],
       faltaram: resultado.faltaram || [],
@@ -2806,6 +3091,7 @@ ${JSON.stringify(itensDaNota)}`,
         estabelecimento: nf.estabelecimento,
         data_emissao: (nf.data_emissao || '').split('T')[0],
         valor_total: nf.valor_total,
+        desconto: nf.desconto,
         itens: itensDaNota,
       });
 
@@ -2819,8 +3105,8 @@ ${JSON.stringify(itensDaNota)}`,
   };
 
   // ==========================================
-  // NAVEGAÇÃO NA ORDEM SOLICITADA:
-  // Resumo, Notas, Supermercado, Farmácia, Demais Itens e Busca (Sem Cartões)
+  // NAVEGAÇÃO PRINCIPAL:
+  // Resumo, Notas, Supermercado, Farmácia, Demais Itens, Busca e Estatísticas
   // ==========================================
   const navItems = [
     { id: 'resumo', label: 'Resumo', icon: PieChart },
@@ -2829,6 +3115,7 @@ ${JSON.stringify(itensDaNota)}`,
     { id: 'farmacia', label: 'Farmácia', icon: HeartPulse },
     { id: 'demais', label: 'Demais Itens', icon: Package },
     { id: 'busca', label: 'Busca', icon: Search },
+    { id: 'estatisticas', label: 'Estatísticas', icon: BarChart3 },
   ];
 
   // Itens para a aba "Demais Itens" (tudo que não é Supermercado nem Farmácia, ou filtrado)
@@ -3106,14 +3393,23 @@ ${JSON.stringify(itensDaNota)}`,
                 <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-2xs flex items-center justify-between">
                   <div>
                     <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Valor Gasto com Notas Fiscais ({selectedMonth})
+                      Valor Pago com Notas Fiscais ({selectedMonth})
                     </span>
                     <p className="text-3xl font-bold text-slate-900 mt-2">
                       {formatCurrency(resumoMensal.totalNotasMes)}
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">
-                      {resumoMensal.qtdNotasMes} nota(s) fiscal(is) registrada(s) no mês
-                    </p>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mt-1.5">
+                      <span>
+                        Total Bruto:{' '}
+                        <strong>{formatCurrency(resumoMensal.totalBrutoNotasMes)}</strong>
+                      </span>
+                      <span>•</span>
+                      <span className="text-emerald-600 font-semibold">
+                        Descontos: - {formatCurrency(resumoMensal.totalDescontoNotasMes)}
+                      </span>
+                      <span>•</span>
+                      <span>{resumoMensal.qtdNotasMes} nota(s)</span>
+                    </div>
                   </div>
                   <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
                     <Receipt className="w-6 h-6" />
@@ -3123,13 +3419,13 @@ ${JSON.stringify(itensDaNota)}`,
                 <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-2xs flex items-center justify-between">
                   <div>
                     <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Total Geral de Gastos no Mês
+                      Total Geral Pago no Mês
                     </span>
                     <p className="text-3xl font-bold text-rose-600 mt-2">
                       {formatCurrency(resumoMensal.totalCategorizado)}
                     </p>
                     <p className="text-xs text-slate-500 mt-1">
-                      Soma de todas as categorias no período
+                      Soma líquida (com descontos abatidos) de todas as categorias
                     </p>
                   </div>
                   <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
@@ -3205,24 +3501,38 @@ ${JSON.stringify(itensDaNota)}`,
                   </div>
                 ) : (
                   <div className="divide-y divide-slate-100">
-                    {notasDoMes.map((nf) => (
-                      <div
-                        key={nf.id}
-                        className="p-4 sm:px-6 flex items-center justify-between gap-3 hover:bg-slate-50"
-                      >
-                        <div>
-                          <p className="font-semibold text-slate-900 text-sm">
-                            {nf.estabelecimento}
-                          </p>
-                          <p className="text-xs text-slate-500">
-                            {formatDateBR(nf.data_emissao)} • {nf.forma_pagamento || 'PIX'}
-                          </p>
+                    {notasDoMes.map((nf) => {
+                      const vals = calcularValoresNota(nf);
+                      return (
+                        <div
+                          key={nf.id}
+                          className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50"
+                        >
+                          <div>
+                            <p className="font-semibold text-slate-900 text-sm">
+                              {nf.estabelecimento}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              {formatDateBR(nf.data_emissao)} • {nf.forma_pagamento || 'PIX'}
+                            </p>
+                          </div>
+                          <div className="text-left sm:text-right">
+                            <div className="flex flex-wrap sm:justify-end items-center gap-2 text-xs text-slate-500">
+                              <span>
+                                Total: <strong>{formatCurrency(vals.valorTotalBruto)}</strong>
+                              </span>
+                              <span>•</span>
+                              <span className="text-emerald-600 font-medium">
+                                Desconto: - {formatCurrency(vals.desconto)}
+                              </span>
+                            </div>
+                            <p className="font-bold text-slate-900 text-sm mt-0.5">
+                              Valor Pago: {formatCurrency(vals.valorPago)}
+                            </p>
+                          </div>
                         </div>
-                        <span className="font-bold text-slate-900 text-sm">
-                          {formatCurrency(nf.valor_total)}
-                        </span>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -3854,7 +4164,7 @@ ${JSON.stringify(itensDaNota)}`,
 
                         <div>
                           <label className="block text-xs font-medium text-slate-600 mb-1">
-                            Valor Total (R$)
+                            Valor Total Bruto (R$)
                           </label>
                           <input
                             type="number"
@@ -3887,6 +4197,19 @@ ${JSON.stringify(itensDaNota)}`,
                             }
                             className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm"
                           />
+                        </div>
+
+                        <div className="sm:col-span-2 bg-emerald-50/70 border border-emerald-200 rounded-xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <span className="text-slate-700">
+                            Valor Total: <strong>{formatCurrency(extractedNota.valor_total)}</strong> • Desconto:{' '}
+                            <strong className="text-emerald-700">
+                              - {formatCurrency(extractedNota.desconto)}
+                            </strong>
+                          </span>
+                          <span className="font-bold text-emerald-800 text-sm">
+                            Valor Pago (Total - Desconto):{' '}
+                            {formatCurrency(calcularValoresNota(extractedNota).valorPago)}
+                          </span>
                         </div>
 
                         <div>
@@ -4280,16 +4603,25 @@ ${JSON.stringify(itensDaNota)}`,
                             </div>
 
                             <div className="flex items-center justify-between sm:justify-end gap-2">
-                              <div className="text-right mr-1">
-                                <p className="font-bold text-slate-900 text-sm">
-                                  {formatCurrency(nf.valor_total)}
-                                </p>
-                                {Number(nf.desconto) > 0 && (
-                                  <p className="text-[11px] text-emerald-600">
-                                    Desc: {formatCurrency(nf.desconto)}
-                                  </p>
-                                )}
-                              </div>
+                              {(() => {
+                                const vals = calcularValoresNota(nf);
+                                return (
+                                  <div className="text-right mr-1">
+                                    <div className="flex flex-wrap justify-end items-center gap-1.5 text-[11px] text-slate-500">
+                                      <span>
+                                        Total: <strong>{formatCurrency(vals.valorTotalBruto)}</strong>
+                                      </span>
+                                      <span>•</span>
+                                      <span className="text-emerald-600 font-medium">
+                                        Desconto: - {formatCurrency(vals.desconto)}
+                                      </span>
+                                    </div>
+                                    <p className="font-bold text-slate-900 text-sm">
+                                      Valor Pago: {formatCurrency(vals.valorPago)}
+                                    </p>
+                                  </div>
+                                );
+                              })()}
 
                               {nf.url_comprovante && (
                                 <button
@@ -4705,17 +5037,26 @@ ${JSON.stringify(itensDaNota)}`,
                             <p className="font-semibold text-slate-800 text-xs truncate">
                               {prod.descricao_item}
                             </p>
-                            <p className="text-[11px] text-slate-500 truncate">
-                              Último:{' '}
-                              <strong>{formatCurrency(prod.ultimo_valor_unitario)}</strong> /
-                              {prod.unidade} • {prod.ultimo_estabelecimento} (
-                              {formatDateBR(prod.ultima_data)})
+                            <p className="text-[11px] text-slate-600 truncate">
+                              Preço Médio:{' '}
+                              <strong className="text-emerald-700">
+                                {formatCurrency(prod.preco_medio)}
+                              </strong>{' '}
+                              /{prod.unidade} • Qtd Média:{' '}
+                              <strong>
+                                {prod.quantidade_media} {prod.unidade}
+                              </strong>
+                            </p>
+                            <p className="text-[10px] text-slate-400 truncate">
+                              Comprado {prod.vezes_comprado}x ({prod.frequencia_texto}) • Últ:{' '}
+                              {formatDateBR(prod.ultima_data)}
                             </p>
                           </div>
                           <button
                             type="button"
                             onClick={() => addFromCatalogToShoppingList(prod)}
                             className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shrink-0 cursor-pointer"
+                            title="Adicionar com Preço Médio e Quantidade Média"
                           >
                             <Plus className="w-3.5 h-3.5" />
                             <span>Lista</span>
@@ -5595,6 +5936,242 @@ ${JSON.stringify(itensDaNota)}`,
               </section>
             </div>
           )}
+
+          {/* ==========================================
+              ABA 7: ESTATÍSTICAS DOS ITENS (MAIS COMPRADOS, FREQUÊNCIA, PREÇO MÉDIO & QTD MÉDIA)
+          ========================================== */}
+          {activeTab === 'estatisticas' && (
+            <div className="space-y-6">
+              {/* CARDS DE DESTAQUE DAS ESTATÍSTICAS */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-emerald-700">
+                    Item Mais Comprado
+                  </span>
+                  <p className="text-base font-bold text-slate-900 mt-1.5 truncate">
+                    {resumoEstatisticas.maisComprado
+                      ? resumoEstatisticas.maisComprado.descricao_item
+                      : 'Nenhum item'}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {resumoEstatisticas.maisComprado
+                      ? `Comprado ${resumoEstatisticas.maisComprado.vezes_comprado}x • ${resumoEstatisticas.maisComprado.frequencia_texto}`
+                      : '-'}
+                  </p>
+                </div>
+
+                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-indigo-700">
+                    Produtos Únicos Analisados
+                  </span>
+                  <p className="text-2xl font-bold text-slate-900 mt-1">
+                    {resumoEstatisticas.totalItensUnicos}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {resumoEstatisticas.itensRecorrentes} item(ns) com compra recorrente (2+ vezes)
+                  </p>
+                </div>
+
+                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-amber-700">
+                    Maior Gasto Acumulado
+                  </span>
+                  <p className="text-base font-bold text-slate-900 mt-1.5 truncate">
+                    {resumoEstatisticas.maiorGastoItem
+                      ? resumoEstatisticas.maiorGastoItem.descricao_item
+                      : '-'}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {resumoEstatisticas.maiorGastoItem
+                      ? `Total gasto: ${formatCurrency(
+                          resumoEstatisticas.maiorGastoItem.gasto_total
+                        )} (${resumoEstatisticas.maiorGastoItem.vezes_comprado}x)`
+                      : '-'}
+                  </p>
+                </div>
+
+                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Regra das Listas de Compras
+                  </span>
+                  <p className="text-sm font-bold text-emerald-700 mt-1.5">
+                    Preço Médio &amp; Qtd Média
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Suas listas de Supermercado e Farmácia usam automaticamente estas médias
+                  </p>
+                </div>
+              </div>
+
+              {/* BARRA DE BUSCA, FILTRO DE CATEGORIA E ORDENAÇÃO */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                      <BarChart3 className="w-5 h-5 text-emerald-600" />
+                      <span>
+                        Ranking de Itens Mais Comprados, Frequência e Preço Médio
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Acompanhe com que frequência cada produto é comprado, a quantidade média por compra e o preço médio histórico.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={statsCategoryFilter}
+                      onChange={(e) => setStatsCategoryFilter(e.target.value)}
+                      className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-slate-50 text-slate-800"
+                    >
+                      <option value="TODAS">Todas as Categorias</option>
+                      <option value="Alimentação & Supermercado">
+                        Somente Supermercado
+                      </option>
+                      <option value="Saúde & Farmácia">Somente Farmácia</option>
+                      <option value="DEMAIS">Demais Itens</option>
+                    </select>
+
+                    <select
+                      value={statsSortBy}
+                      onChange={(e) => setStatsSortBy(e.target.value)}
+                      className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-slate-50 text-slate-800"
+                    >
+                      <option value="MAIS_COMPRADOS">
+                        Ordenar: Mais Comprados (Frequência)
+                      </option>
+                      <option value="MENOR_CICLO">
+                        Ordenar: Menor Intervalo de Dias
+                      </option>
+                      <option value="MAIOR_GASTO">
+                        Ordenar: Maior Gasto Acumulado
+                      </option>
+                      <option value="PRECO_MEDIO">
+                        Ordenar: Maior Preço Médio
+                      </option>
+                      <option value="ALFABETICA">Ordenar: Nome (A-Z)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Filtrar estatísticas por nome do produto, categoria ou estabelecimento..."
+                    value={statsSearch}
+                    onChange={(e) => setStatsSearch(e.target.value)}
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {/* TABELA / LISTA DE ESTATÍSTICAS DOS ITENS */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+                {estatisticasFiltradas.length === 0 ? (
+                  <div className="p-10 text-center text-slate-400 text-sm">
+                    Nenhum item encontrado para gerar estatísticas.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {estatisticasFiltradas.map((stat, idx) => {
+                      const isFarma = stat.categoria_item === 'Saúde & Farmácia';
+                      return (
+                        <div
+                          key={stat.chave}
+                          className="p-4 sm:px-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4 hover:bg-slate-50/80 transition"
+                        >
+                          <div className="flex items-start gap-3 min-w-0">
+                            <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">
+                              #{idx + 1}
+                            </div>
+
+                            <div className="space-y-1 min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="font-bold text-slate-900 text-sm">
+                                  {stat.descricao_item}
+                                </p>
+                                <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md text-[11px] font-medium">
+                                  {stat.categoria_item}
+                                </span>
+                                <span className="bg-indigo-50 text-indigo-700 px-2.5 py-0.5 rounded-full text-[11px] font-bold">
+                                  🔄 Comprado {stat.vezes_comprado}x
+                                </span>
+                                <span className="bg-emerald-50 text-emerald-700 px-2.5 py-0.5 rounded-full text-[11px] font-semibold">
+                                  ⏱️ {stat.frequencia_texto}
+                                </span>
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                                <span>
+                                  📦 Qtd Média por Compra:{' '}
+                                  <strong className="text-slate-800">
+                                    {stat.quantidade_media} {stat.unidade}
+                                  </strong>{' '}
+                                  (Total acumulado: {stat.quantidade_total} {stat.unidade})
+                                </span>
+                                <span>•</span>
+                                <span>
+                                  Última compra:{' '}
+                                  <strong>{formatDateBR(stat.ultima_data)}</strong>
+                                </span>
+                                {stat.estabelecimentos.length > 0 && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="truncate max-w-xs">
+                                      Lojas: {stat.estabelecimentos.join(', ')}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-wrap sm:flex-nowrap items-center justify-between lg:justify-end gap-4 pt-2 lg:pt-0 border-t lg:border-t-0 border-slate-100 shrink-0">
+                            <div className="text-left sm:text-right">
+                              <p className="text-xs text-slate-500">
+                                Preço Médio:{' '}
+                                <strong className="text-emerald-700 text-sm">
+                                  {formatCurrency(stat.preco_medio)}
+                                </strong>{' '}
+                                /{stat.unidade}
+                              </p>
+                              <p className="text-[11px] text-slate-400">
+                                Mín: {formatCurrency(stat.menor_preco)} • Máx:{' '}
+                                {formatCurrency(stat.maior_preco)} • Gasto Total:{' '}
+                                <strong className="text-slate-700">
+                                  {formatCurrency(stat.gasto_total)}
+                                </strong>
+                              </p>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                addFromCatalogToShoppingList(
+                                  stat,
+                                  isFarma ? 'FARMACIA' : 'SUPERMERCADO'
+                                )
+                              }
+                              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer shrink-0 shadow-2xs"
+                              title={`Adicionar à lista de ${
+                                isFarma ? 'Farmácia' : 'Supermercado'
+                              } com Preço Médio e Quantidade Média`}
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>
+                                + Lista {isFarma ? 'Farmácia' : 'Mercado'}
+                              </span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
@@ -5607,10 +6184,19 @@ ${JSON.stringify(itensDaNota)}`,
                 <h3 className="font-bold text-slate-900 text-sm">
                   {viewingComprovante.estabelecimento}
                 </h3>
-                <p className="text-xs text-slate-500">
-                  Emissão: {formatDateBR(viewingComprovante.data_emissao)} •{' '}
-                  {formatCurrency(viewingComprovante.valor_total)}
-                </p>
+                {(() => {
+                  const vals = calcularValoresNota(viewingComprovante);
+                  return (
+                    <p className="text-xs text-slate-500">
+                      Emissão: {formatDateBR(viewingComprovante.data_emissao)} • Total:{' '}
+                      {formatCurrency(vals.valorTotalBruto)} • Desconto: -{' '}
+                      {formatCurrency(vals.desconto)} •{' '}
+                      <strong className="text-emerald-700">
+                        Valor Pago: {formatCurrency(vals.valorPago)}
+                      </strong>
+                    </p>
+                  );
+                })()}
               </div>
               <div className="flex items-center gap-2">
                 <a
@@ -5829,7 +6415,7 @@ ${JSON.stringify(itensDaNota)}`,
             : 'bg-white/95 border-slate-200 shadow-[0_-4px_20px_rgba(15,23,42,0.06)]'
         }`}
       >
-        <div className="max-w-md mx-auto grid grid-cols-6 items-center px-2 py-2">
+        <div className="max-w-md mx-auto grid grid-cols-7 items-center px-1.5 py-2">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;
@@ -5842,7 +6428,7 @@ ${JSON.stringify(itensDaNota)}`,
                 className="relative flex items-center justify-center py-1.5 cursor-pointer group"
               >
                 <div
-                  className={`flex items-center justify-center w-11 h-11 rounded-2xl transition-all duration-200 ${
+                  className={`flex items-center justify-center w-10 h-10 rounded-2xl transition-all duration-200 ${
                     active
                       ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30 scale-105'
                       : darkMode
