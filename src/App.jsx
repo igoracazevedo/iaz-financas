@@ -3660,7 +3660,13 @@ ${JSON.stringify(itensDaNota)}`,
 
                     {qrCameraActive && (
                       <div className="bg-slate-900 rounded-xl p-3 flex flex-col items-center justify-center">
-                        <div id="qr-reader-container" className="w-full max-w-sm rounded-lg overflow-hidden" />
+                        <video
+                          ref={qrVideoRef}
+                          autoPlay
+                          playsInline
+                          muted
+                          className="w-full max-w-sm rounded-lg overflow-hidden"
+                        />
                         <p className="text-xs text-slate-300 mt-2">
                           Aponte a câmera para o QR Code impresso no cupom fiscal...
                         </p>
@@ -3715,38 +3721,38 @@ ${JSON.stringify(itensDaNota)}`,
                     </div>
 
                     {/* PREVIEW AUTOMÁTICO DA CHAVE DECODIFICADA */}
-                    {qrDecodedPreview && (
+                    {infoQrDecodificada?.valida && (
                       <div className="bg-white rounded-xl border border-emerald-200 p-3 flex flex-wrap items-center justify-between gap-2 text-xs">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 font-bold">
                             <CheckCircle2 className="w-3.5 h-3.5" /> Chave 44 dígitos identificada!
                           </span>
-                          {qrDecodedPreview.uf && (
+                          {infoQrDecodificada.uf && (
                             <span className="px-2 py-1 rounded bg-slate-100 text-slate-700 font-semibold">
-                              UF: {qrDecodedPreview.uf}
+                              UF: {infoQrDecodificada.uf}
                             </span>
                           )}
-                          {qrDecodedPreview.anoMes && (
+                          {infoQrDecodificada.anoMes && (
                             <span className="px-2 py-1 rounded bg-indigo-50 text-indigo-700 font-bold">
-                              📅 Emissão na Chave: {qrDecodedPreview.anoMes.split('-')[1]}/{qrDecodedPreview.anoMes.split('-')[0]}
+                              📅 Emissão na Chave: {infoQrDecodificada.anoMes.split('-')[1]}/{infoQrDecodificada.anoMes.split('-')[0]}
                             </span>
                           )}
-                          {qrDecodedPreview.cnpjFormatado && (
+                          {infoQrDecodificada.cnpjFormatado && (
                             <span className="px-2 py-1 rounded bg-slate-100 text-slate-700 font-mono">
-                              CNPJ: {qrDecodedPreview.cnpjFormatado}
+                              CNPJ: {infoQrDecodificada.cnpjFormatado}
                             </span>
                           )}
                         </div>
 
-                        {qrDecodedPreview.urlPortalSefaz && (
+                        {infoQrDecodificada.urlConsultaSefaz && (
                           <a
-                            href={qrDecodedPreview.urlPortalSefaz}
+                            href={infoQrDecodificada.urlConsultaSefaz}
                             target="_blank"
                             rel="noreferrer"
                             className="inline-flex items-center gap-1 text-emerald-700 hover:underline font-semibold"
                           >
                             <ExternalLink className="w-3.5 h-3.5" />
-                            <span>Abrir Portal SEFAZ ({qrDecodedPreview.uf || 'NFC-e'})</span>
+                            <span>Abrir Portal SEFAZ ({infoQrDecodificada.uf || 'NFC-e'})</span>
                           </a>
                         )}
                       </div>
@@ -4485,17 +4491,17 @@ ${JSON.stringify(itensDaNota)}`,
                     <button
                       type="button"
                       onClick={() => {
-                        if (selectedNotaIds.length === notasFiscais.length) {
-                          setSelectedNotaIds([]);
+                        if (selectedNotasIds.length === notasFiscais.length) {
+                          setSelectedNotasIds([]);
                         } else {
-                          setSelectedNotaIds(notasFiscais.map((n) => n.id));
+                          setSelectedNotasIds(notasFiscais.map((n) => n.id));
                         }
                       }}
                       className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-100 cursor-pointer"
                     >
-                      {selectedNotaIds.length === notasFiscais.length && notasFiscais.length > 0
+                      {selectedNotasIds.length === notasFiscais.length && notasFiscais.length > 0
                         ? 'Desmarcar Todas'
-                        : `Selecionar Todas (${selectedNotaIds.length})`}
+                        : `Selecionar Todas (${selectedNotasIds.length})`}
                     </button>
 
                     <input
@@ -4507,16 +4513,16 @@ ${JSON.stringify(itensDaNota)}`,
 
                     <button
                       type="button"
-                      disabled={bulkDateSaving || selectedNotaIds.length === 0 || !bulkNewDate}
+                      disabled={loading || selectedNotasIds.length === 0 || !bulkNewDate}
                       onClick={handleBulkUpdateNotasDate}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-xs font-semibold cursor-pointer transition"
                     >
-                      {bulkDateSaving ? (
+                      {loading ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
                       ) : (
                         <Calendar className="w-3.5 h-3.5" />
                       )}
-                      <span>Aplicar Data ({selectedNotaIds.length})</span>
+                      <span>Aplicar Data ({selectedNotasIds.length})</span>
                     </button>
                   </div>
                 </div>
@@ -4530,7 +4536,7 @@ ${JSON.stringify(itensDaNota)}`,
                     {notasFiscais.map((nf) => {
                       const itensDaNota = itensNota.filter((i) => i.nota_id === nf.id);
                       const isExpanded = expandedNotaId === nf.id;
-                      const isSelected = selectedNotaIds.includes(nf.id);
+                      const isSelected = selectedNotasIds.includes(nf.id);
 
                       return (
                         <div key={nf.id} className="p-4 sm:px-6">
@@ -4541,9 +4547,9 @@ ${JSON.stringify(itensDaNota)}`,
                                 checked={isSelected}
                                 onChange={(e) => {
                                   if (e.target.checked) {
-                                    setSelectedNotaIds((prev) => [...prev, nf.id]);
+                                    setSelectedNotasIds((prev) => [...prev, nf.id]);
                                   } else {
-                                    setSelectedNotaIds((prev) =>
+                                    setSelectedNotasIds((prev) =>
                                       prev.filter((id) => id !== nf.id)
                                     );
                                   }
@@ -5699,9 +5705,9 @@ ${JSON.stringify(itensDaNota)}`,
                   <Filter className="w-4 h-4 text-slate-400 mr-1" />
                   <button
                     type="button"
-                    onClick={() => setDemaisCategoriaFiltro('TODAS')}
+                    onClick={() => setDemaisCategoryFilter('TODAS_DEMAIS')}
                     className={`px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer transition ${
-                      demaisCategoriaFiltro === 'TODAS'
+                      demaisCategoryFilter === 'TODAS_DEMAIS'
                         ? 'bg-slate-900 text-white'
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
@@ -5714,9 +5720,9 @@ ${JSON.stringify(itensDaNota)}`,
                     <button
                       key={cat}
                       type="button"
-                      onClick={() => setDemaisCategoriaFiltro(cat)}
+                      onClick={() => setDemaisCategoryFilter(cat)}
                       className={`px-3 py-1.5 rounded-xl text-xs font-medium cursor-pointer transition ${
-                        demaisCategoriaFiltro === cat
+                        demaisCategoryFilter === cat
                           ? 'bg-emerald-600 text-white font-semibold'
                           : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
@@ -5750,8 +5756,8 @@ ${JSON.stringify(itensDaNota)}`,
                       i.categoria_nota === 'Saúde & Farmácia';
                     if (isSup || isFarma) return false;
                     if (
-                      demaisCategoriaFiltro !== 'TODAS' &&
-                      i.categoria_item !== demaisCategoriaFiltro
+                      demaisCategoryFilter !== 'TODAS_DEMAIS' &&
+                      i.categoria_item !== demaisCategoryFilter
                     ) {
                       return false;
                     }
@@ -5850,9 +5856,9 @@ ${JSON.stringify(itensDaNota)}`,
                 <div className="divide-y divide-slate-100">
                   {pagamentosDoMes
                     .filter((t) =>
-                      demaisCategoriaFiltro === 'TODAS'
+                      demaisCategoryFilter === 'TODAS_DEMAIS'
                         ? true
-                        : t.categoria === demaisCategoriaFiltro
+                        : t.categoria === demaisCategoryFilter
                     )
                     .map((t) => {
                       const isConcluido =
