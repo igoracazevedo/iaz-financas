@@ -136,7 +136,7 @@ export default function App() {
     data_competencia: `${selectedMonth}-01`,
     data_pagamento: new Date().toISOString().split('T')[0],
     forma_pagamento: 'PIX',
-    status: tipo === 'RECEBIMENTO' ? 'RECEBIDO' : 'PAGO',
+    status: 'CONFIRMADO',
     conta_id: '',
     cartao_id: '',
   });
@@ -227,7 +227,7 @@ export default function App() {
       0
     );
     const totalRecebidoConfirmado = recebimentosDoMes
-      .filter((t) => t.status === 'RECEBIDO' || t.status === 'PAGO')
+      .filter((t) => t.status === 'CONFIRMADO' || t.status === 'RECEBIDO' || t.status === 'PAGO')
       .reduce((acc, t) => acc + (Number(t.valor) || 0), 0);
 
     const totalPagamentos = pagamentosDoMes.reduce(
@@ -235,7 +235,7 @@ export default function App() {
       0
     );
     const totalPagoConfirmado = pagamentosDoMes
-      .filter((t) => t.status === 'PAGO')
+      .filter((t) => t.status === 'CONFIRMADO' || t.status === 'PAGO')
       .reduce((acc, t) => acc + (Number(t.valor) || 0), 0);
 
     const resultadoMes = totalRecebimentos - totalPagamentos;
@@ -423,12 +423,9 @@ export default function App() {
 
   const handleToggleStatusTransacao = async (t) => {
     if (!supabase) return;
-    const isConcluido = t.status === 'PAGO' || t.status === 'RECEBIDO';
-    const novoStatus = isConcluido
-      ? 'PENDENTE'
-      : t.tipo === 'RECEBIMENTO'
-      ? 'RECEBIDO'
-      : 'PAGO';
+    const isConcluido =
+      t.status === 'CONFIRMADO' || t.status === 'PAGO' || t.status === 'RECEBIDO';
+    const novoStatus = isConcluido ? 'PENDENTE' : 'CONFIRMADO';
 
     try {
       const { error } = await supabase
@@ -575,7 +572,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
         categoria_geral: parsed.categoria_geral || CATEGORIAS_DESPESA[0],
         conta_id: contas[0]?.id || '',
         cartao_id: '',
-        status_pagamento: 'PAGO',
+        status_pagamento: 'CONFIRMADO',
         itens: Array.isArray(parsed.itens) ? parsed.itens : [],
       });
 
@@ -602,7 +599,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
         valor: Number(extractedNota.valor_total) || 0,
         data_competencia: extractedNota.data_emissao,
         data_pagamento:
-          extractedNota.status_pagamento === 'PAGO' ? extractedNota.data_emissao : null,
+          extractedNota.status_pagamento === 'CONFIRMADO' ? extractedNota.data_emissao : null,
         forma_pagamento: extractedNota.forma_pagamento,
         status: extractedNota.status_pagamento,
         conta_id: extractedNota.conta_id || null,
@@ -902,7 +899,10 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                     ? recebimentosDoMes
                     : pagamentosDoMes
                   ).map((t) => {
-                    const isConcluido = t.status === 'PAGO' || t.status === 'RECEBIDO';
+                    const isConcluido =
+                      t.status === 'CONFIRMADO' ||
+                      t.status === 'PAGO' ||
+                      t.status === 'RECEBIDO';
                     const contaNome = getContaNome(t.conta_id);
                     const cartaoNome = getCartaoNome(t.cartao_id);
 
@@ -2017,12 +2017,10 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                     }
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
                   >
+                    <option value="CONFIRMADO">
+                      CONFIRMADO ({transacaoForm.tipo === 'RECEBIMENTO' ? 'Recebido' : 'Pago'})
+                    </option>
                     <option value="PENDENTE">PENDENTE</option>
-                    {transacaoForm.tipo === 'RECEBIMENTO' ? (
-                      <option value="RECEBIDO">RECEBIDO</option>
-                    ) : (
-                      <option value="PAGO">PAGO</option>
-                    )}
                   </select>
                 </div>
               </div>
