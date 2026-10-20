@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenAI } from '@google/genai';
 import {
-  Wallet,
   CreditCard,
   ArrowUpCircle,
   ArrowDownCircle,
@@ -15,7 +14,6 @@ import {
   Camera,
   Sparkles,
   Loader2,
-  Building2,
   Calendar,
   ChevronDown,
   ChevronUp,
@@ -28,6 +26,11 @@ import {
   Upload,
   Eye,
   Download,
+  Search,
+  ShoppingCart,
+  ShieldCheck,
+  ShieldAlert,
+  Store,
 } from 'lucide-react';
 
 // ==========================================
@@ -38,7 +41,7 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 const GEMINI_API_KEY =
   typeof __ENCODED_GEMINI_KEY__ !== 'undefined' && __ENCODED_GEMINI_KEY__
     ? atob(__ENCODED_GEMINI_KEY__)
-    : '';
+    : import.meta.env.VITE_GEMINI_API_KEY || '';
 
 const supabase =
   SUPABASE_URL && SUPABASE_ANON_KEY
@@ -47,6 +50,7 @@ const supabase =
 
 const CATEGORIAS_DESPESA = [
   'Alimentação & Supermercado',
+  'Eletrônicos & Eletrodomésticos',
   'Moradia & Contas',
   'Transporte & Combustível',
   'Saúde & Farmácia',
@@ -89,15 +93,85 @@ const formatDateBR = (dateStr) => {
   return `${d}/${m}/${y}`;
 };
 
+// Helpers para embutir/extrair garantia_meses com compatibilidade total no banco
+const GARANTIA_MARKER = '||GARANTIA:';
+
+const encodeCategoriaComGarantia = (categoria, garantiaMeses) => {
+  const cleanCat = String(categoria || 'Outros').split(GARANTIA_MARKER)[0];
+  const meses = Number(garantiaMeses) || 0;
+  return meses > 0 ? `${cleanCat}${GARANTIA_MARKER}${meses}` : cleanCat;
+};
+
+const decodeItemGarantia = (item) => {
+  const rawCat = String(item.categoria_item || 'Outros');
+  const [cleanCat, markerVal] = rawCat.split(GARANTIA_MARKER);
+  const garantiaMeses =
+    item.garantia_meses !== undefined && item.garantia_meses !== null
+      ? Number(item.garantia_meses) || 0
+      : Number(markerVal) || 0;
+  return {
+    ...item,
+    categoria_item: cleanCat || 'Outros',
+    garantia_meses: garantiaMeses,
+  };
+};
+
+// Calcula o status de garantia a partir da data_emissao e garantia_meses
+const calcularStatusGarantia = (dataEmissaoStr, garantiaMeses) => {
+  const meses = Number(garantiaMeses) || 0;
+  if (meses <= 0 || !dataEmissaoStr) return null;
+
+  const [y, m, d] = dataEmissaoStr.split('T')[0].split('-').map(Number);
+  if (!y || !m || !d) return null;
+
+  const dataFim = new Date(y, m - 1 + meses, d, 23, 59, 59);
+  const hoje = new Date();
+
+  const diffMs = dataFim.getTime() - hoje.getTime();
+  const diasRestantes = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  const dataFimStr = `${String(dataFim.getDate()).padStart(2, '0')}/${String(
+    dataFim.getMonth() + 1
+  ).padStart(2, '0')}/${dataFim.getFullYear()}`;
+
+  if (diasRestantes <= 0) {
+    return {
+      expirada: true,
+      diasRestantes: 0,
+      dataFimStr,
+      texto: 'Produto fora da Garantia',
+      detalhe: `Garantia de ${meses} ${meses === 1 ? 'mês' : 'meses'} encerrou em ${dataFimStr}`,
+    };
+  }
+
+  const mesesInteiros = Math.floor(diasRestantes / 30);
+  const diasExtras = diasRestantes % 30;
+  let tempoTexto = '';
+  if (mesesInteiros > 0 && diasExtras > 0) {
+    tempoTexto = `Faltam ${mesesInteiros} ${mesesInteiros === 1 ? 'mês' : 'meses'} e ${diasExtras} ${diasExtras === 1 ? 'dia' : 'dias'}`;
+  } else if (mesesInteiros > 0) {
+    tempoTexto = `Faltam ${mesesInteiros} ${mesesInteiros === 1 ? 'mês' : 'meses'}`;
+  } else {
+    tempoTexto = `Faltam ${diasRestantes} ${diasRestantes === 1 ? 'dia' : 'dias'}`;
+  }
+
+  return {
+    expirada: false,
+    diasRestantes,
+    dataFimStr,
+    texto: `${tempoTexto} de garantia`,
+    detalhe: `Válida até ${dataFimStr} (${meses}m)`,
+  };
+};
+
 export default function App() {
+  // Aba inicial: Notas IA ('notas')
   const [activeTab, setActiveTab] = useState('notas');
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
 
-  // Estados das 5 tabelas
-  const [contas, setContas] = useState([]);
+  // Estados das tabelas ativas
   const [cartoes, setCartoes] = useState([]);
   const [transacoes, setTransacoes] = useState([]);
   const [notasFiscais, setNotasFiscais] = useState([]);
@@ -105,15 +179,6 @@ export default function App() {
 
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
-
-  // Estados de Formulários - Contas Bancárias
-  const [contaForm, setContaForm] = useState({
-    id: null,
-    nome_banco: '',
-    tipo_conta: 'CORRENTE',
-    saldo_inicial: '',
-    ativo: true,
-  });
 
   // Estados de Formulários - Cartões
   const [cartaoForm, setCartaoForm] = useState({
@@ -124,7 +189,6 @@ export default function App() {
     limite: '',
     dia_fechamento: 1,
     dia_vencimento: 10,
-    conta_id: '',
     ativo: true,
   });
 
@@ -139,19 +203,47 @@ export default function App() {
     data_pagamento: new Date().toISOString().split('T')[0],
     forma_pagamento: 'PIX',
     status: 'CONFIRMADO',
-    conta_id: '',
     cartao_id: '',
   });
 
   const [transacaoForm, setTransacaoForm] = useState(() => emptyTransacao('PAGAMENTO'));
   const [showTransacaoModal, setShowTransacaoModal] = useState(false);
 
-  // Estados de Leitura de Notas Fiscais (OCR com Gemini)
+  // Estados de Leitura e Edição de Notas Fiscais (OCR com Gemini)
   const [ocrLoading, setOcrLoading] = useState(false);
   const [previewImage, setPreviewImage] = useState(null);
   const [extractedNota, setExtractedNota] = useState(null);
   const [expandedNotaId, setExpandedNotaId] = useState(null);
   const [viewingComprovante, setViewingComprovante] = useState(null);
+
+  // Estados da Aba de Busca de Itens
+  const [searchItemQuery, setSearchItemQuery] = useState('');
+  const [onlyWithWarranty, setOnlyWithWarranty] = useState(false);
+
+  // Estados da Aba Lista de Supermercado (persistida no localStorage)
+  const [shoppingList, setShoppingList] = useState(() => {
+    try {
+      const saved = localStorage.getItem('iaz_shopping_list');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [customListItem, setCustomListItem] = useState({
+    descricao_item: '',
+    quantidade: 1,
+    unidade: 'un',
+    valor_unitario: '',
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('iaz_shopping_list', JSON.stringify(shoppingList));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [shoppingList]);
 
   const showNotice = (message, type = 'success') => {
     setToast({ message, type });
@@ -166,28 +258,25 @@ export default function App() {
     setLoading(true);
     try {
       const [
-        { data: contasData, error: e1 },
         { data: cartoesData, error: e2 },
         { data: transacoesData, error: e3 },
         { data: notasData, error: e4 },
         { data: itensData, error: e5 },
       ] = await Promise.all([
-        supabase.from('contas_bancarias').select('*').order('created_at', { ascending: false }),
         supabase.from('cartoes').select('*').order('created_at', { ascending: false }),
         supabase.from('transacoes').select('*').order('data_competencia', { ascending: false }),
-        supabase.from('notas_fiscais').select('*').order('created_at', { ascending: false }),
+        supabase.from('notas_fiscais').select('*').order('data_emissao', { ascending: false }),
         supabase.from('itens_nota').select('*').order('created_at', { ascending: true }),
       ]);
 
-      if (e1 || e2 || e3 || e4 || e5) {
-        throw e1 || e2 || e3 || e4 || e5;
+      if (e2 || e3 || e4 || e5) {
+        throw e2 || e3 || e4 || e5;
       }
 
-      setContas(contasData || []);
       setCartoes(cartoesData || []);
       setTransacoes(transacoesData || []);
       setNotasFiscais(notasData || []);
-      setItensNota(itensData || []);
+      setItensNota((itensData || []).map(decodeItemGarantia));
     } catch (err) {
       console.error('Erro ao buscar dados do Supabase:', err);
       showNotice(`Erro ao carregar dados: ${err.message}`, 'error');
@@ -221,16 +310,14 @@ export default function App() {
   );
 
   const resumo = useMemo(() => {
-    const saldoInicialContas = contas
-      .filter((c) => c.ativo !== false)
-      .reduce((acc, c) => acc + (Number(c.saldo_inicial) || 0), 0);
-
     const totalRecebimentos = recebimentosDoMes.reduce(
       (acc, t) => acc + (Number(t.valor) || 0),
       0
     );
     const totalRecebidoConfirmado = recebimentosDoMes
-      .filter((t) => t.status === 'CONFIRMADO' || t.status === 'RECEBIDO' || t.status === 'PAGO')
+      .filter(
+        (t) => t.status === 'CONFIRMADO' || t.status === 'RECEBIDO' || t.status === 'PAGO'
+      )
       .reduce((acc, t) => acc + (Number(t.valor) || 0), 0);
 
     const totalPagamentos = pagamentosDoMes.reduce(
@@ -243,64 +330,102 @@ export default function App() {
 
     const resultadoMes = totalRecebimentos - totalPagamentos;
 
+    const notasNoMes = notasFiscais.filter((nf) =>
+      (nf.data_emissao || '').startsWith(selectedMonth)
+    );
+    const totalNotasMes = notasNoMes.reduce(
+      (acc, nf) => acc + (Number(nf.valor_total) || 0),
+      0
+    );
+
     return {
-      saldoInicialContas,
+      totalNotasMes,
+      qtdNotasMes: notasNoMes.length,
       totalRecebimentos,
       totalRecebidoConfirmado,
       totalPagamentos,
       totalPagoConfirmado,
       resultadoMes,
     };
-  }, [contas, recebimentosDoMes, pagamentosDoMes]);
+  }, [notasFiscais, recebimentosDoMes, pagamentosDoMes, selectedMonth]);
 
   // ==========================================
-  // 1. CRUD CONTAS BANCÁRIAS
+  // DADOS ENRIQUECIDOS DE ITENS (PARA BUSCA, GARANTIA E SUPERMERCADO)
   // ==========================================
-  const handleSaveConta = async (e) => {
-    e.preventDefault();
-    if (!supabase) return showNotice('Configure o Supabase no arquivo .env', 'error');
+  const itensEnriquecidos = useMemo(() => {
+    const mapaNotas = new Map(notasFiscais.map((nf) => [nf.id, nf]));
+    return itensNota
+      .map((item) => {
+        const nf = mapaNotas.get(item.nota_id);
+        const dataCompra = (nf?.data_emissao || item.created_at || '').split('T')[0];
+        const garantiaInfo = calcularStatusGarantia(dataCompra, item.garantia_meses);
+        return {
+          ...item,
+          estabelecimento: nf?.estabelecimento || 'Local não informado',
+          cnpj: nf?.cnpj || '',
+          data_compra: dataCompra,
+          forma_pagamento: nf?.forma_pagamento || '',
+          garantiaInfo,
+        };
+      })
+      .sort((a, b) => {
+        if (b.data_compra !== a.data_compra) {
+          return b.data_compra.localeCompare(a.data_compra);
+        }
+        return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+      });
+  }, [itensNota, notasFiscais]);
 
-    const payload = {
-      nome_banco: contaForm.nome_banco.trim(),
-      tipo_conta: contaForm.tipo_conta,
-      saldo_inicial: Number(contaForm.saldo_inicial) || 0,
-      ativo: Boolean(contaForm.ativo),
-    };
+  // Itens filtrados na aba "Buscar Itens" em ordem decrescente de data
+  const resultadosBuscaItens = useMemo(() => {
+    const q = searchItemQuery.trim().toLowerCase();
+    return itensEnriquecidos.filter((it) => {
+      if (onlyWithWarranty && !(Number(it.garantia_meses) > 0)) return false;
+      if (!q) return true;
+      return (
+        String(it.descricao_item || '').toLowerCase().includes(q) ||
+        String(it.estabelecimento || '').toLowerCase().includes(q) ||
+        String(it.categoria_item || '').toLowerCase().includes(q)
+      );
+    });
+  }, [itensEnriquecidos, searchItemQuery, onlyWithWarranty]);
 
-    try {
-      if (contaForm.id) {
-        const { error } = await supabase
-          .from('contas_bancarias')
-          .update(payload)
-          .eq('id', contaForm.id);
-        if (error) throw error;
-        showNotice('Conta bancária atualizada com sucesso!');
+  // Catálogo de produtos únicos (com último preço e local) para a Lista de Supermercado
+  const catalogoSupermercado = useMemo(() => {
+    const map = new Map();
+    // Como itensEnriquecidos já está em ordem decrescente de data, o primeiro encontrado é o mais recente
+    for (const it of itensEnriquecidos) {
+      const chave = String(it.descricao_item || '').trim().toUpperCase();
+      if (!chave) continue;
+      if (!map.has(chave)) {
+        map.set(chave, {
+          chave,
+          descricao_item: it.descricao_item,
+          unidade: it.unidade || 'un',
+          ultimo_valor_unitario: Number(it.valor_unitario) || Number(it.valor_total) || 0,
+          ultimo_estabelecimento: it.estabelecimento,
+          ultima_data: it.data_compra,
+          categoria_item: it.categoria_item,
+          historico_compras: 1,
+        });
       } else {
-        const { error } = await supabase.from('contas_bancarias').insert([payload]);
-        if (error) throw error;
-        showNotice('Conta bancária cadastrada com sucesso!');
+        map.get(chave).historico_compras += 1;
       }
-      setContaForm({ id: null, nome_banco: '', tipo_conta: 'CORRENTE', saldo_inicial: '', ativo: true });
-      fetchAllData();
-    } catch (err) {
-      showNotice(`Erro ao salvar conta: ${err.message}`, 'error');
     }
-  };
-
-  const handleDeleteConta = async (id) => {
-    if (!supabase) return;
-    try {
-      const { error } = await supabase.from('contas_bancarias').delete().eq('id', id);
-      if (error) throw error;
-      showNotice('Conta removida!');
-      fetchAllData();
-    } catch (err) {
-      showNotice(`Erro ao excluir conta: ${err.message}`, 'error');
-    }
-  };
+    const lista = Array.from(map.values()).sort((a, b) =>
+      a.descricao_item.localeCompare(b.descricao_item)
+    );
+    const q = catalogSearch.trim().toLowerCase();
+    if (!q) return lista;
+    return lista.filter(
+      (p) =>
+        p.descricao_item.toLowerCase().includes(q) ||
+        p.ultimo_estabelecimento.toLowerCase().includes(q)
+    );
+  }, [itensEnriquecidos, catalogSearch]);
 
   // ==========================================
-  // 2. CRUD CARTÕES
+  // CRUD CARTÕES
   // ==========================================
   const handleSaveCartao = async (e) => {
     e.preventDefault();
@@ -313,7 +438,6 @@ export default function App() {
       limite: Number(cartaoForm.limite) || 0,
       dia_fechamento: Number(cartaoForm.dia_fechamento) || 1,
       dia_vencimento: Number(cartaoForm.dia_vencimento) || 10,
-      conta_id: cartaoForm.conta_id || null,
       ativo: Boolean(cartaoForm.ativo),
     };
 
@@ -338,7 +462,6 @@ export default function App() {
         limite: '',
         dia_fechamento: 1,
         dia_vencimento: 10,
-        conta_id: '',
         ativo: true,
       });
       fetchAllData();
@@ -360,7 +483,7 @@ export default function App() {
   };
 
   // ==========================================
-  // 3 & 4. CRUD TRANSAÇÕES (RECEBIMENTOS / PAGAMENTOS)
+  // CRUD TRANSAÇÕES (RECEBIMENTOS / PAGAMENTOS)
   // ==========================================
   const openNewTransacaoModal = (tipo) => {
     setTransacaoForm({
@@ -381,7 +504,6 @@ export default function App() {
       data_pagamento: t.data_pagamento || '',
       forma_pagamento: t.forma_pagamento || 'PIX',
       status: t.status || 'PENDENTE',
-      conta_id: t.conta_id || '',
       cartao_id: t.cartao_id || '',
     });
     setShowTransacaoModal(true);
@@ -400,7 +522,6 @@ export default function App() {
       data_pagamento: transacaoForm.data_pagamento || null,
       forma_pagamento: transacaoForm.forma_pagamento,
       status: transacaoForm.status,
-      conta_id: transacaoForm.conta_id || null,
       cartao_id: transacaoForm.cartao_id || null,
     };
 
@@ -461,7 +582,7 @@ export default function App() {
   };
 
   // ==========================================
-  // 5. OCR DE NOTAS FISCAIS COM GEMINI API
+  // OCR E EDIÇÃO DE NOTAS FISCAIS COM GEMINI API + GARANTIA
   // ==========================================
   const fileToBase64 = (file) =>
     new Promise((resolve, reject) => {
@@ -520,7 +641,10 @@ export default function App() {
     if (!file) return;
 
     if (!GEMINI_API_KEY) {
-      showNotice('Configure VITE_GEMINI_API_KEY no arquivo .env para usar a leitura via IA.', 'error');
+      showNotice(
+        'Configure VITE_GEMINI_API_KEY no arquivo .env para usar a leitura via IA.',
+        'error'
+      );
       return;
     }
 
@@ -541,10 +665,11 @@ export default function App() {
           },
           {
             type: 'text',
-            text: `Analise esta foto de Nota Fiscal / Cupom Fiscal brasileiro (NFC-e, NF-e ou SAT) e extraia todos os dados estruturados.
+            text: `Analise esta Nota Fiscal / Cupom Fiscal brasileiro (NFC-e, NF-e, DANFE ou SAT) e extraia todos os dados estruturados.
 Classifique cada item e a categoria geral usando uma destas categorias: ${CATEGORIAS_DESPESA.join(', ')}.
-Para data_emissao, retorne no formato YYYY-MM-DD (se não encontrar o ano, use o ano atual).
-Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cartão de Débito, Dinheiro, Boleto ou Outros.`,
+Para data_emissao, retorne no formato YYYY-MM-DD.
+Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cartão de Débito, Dinheiro, Boleto ou Outros.
+Para cada item, preencha garantia_meses (número inteiro de meses de garantia): se for um produto eletrônico, eletrodoméstico, informática ou equipamento durável, informe o tempo de garantia escrito na nota ou 12 meses por padrão; se for alimento/supermercado/consumível sem garantia durável, retorne 0.`,
           },
         ],
         response_format: [
@@ -573,6 +698,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                       valor_unitario: { type: 'number' },
                       valor_total: { type: 'number' },
                       categoria_item: { type: 'string' },
+                      garantia_meses: { type: 'number' },
                     },
                     required: [
                       'descricao_item',
@@ -581,6 +707,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                       'valor_unitario',
                       'valor_total',
                       'categoria_item',
+                      'garantia_meses',
                     ],
                   },
                 },
@@ -613,18 +740,23 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
         forma_pagamento: parsed.forma_pagamento || 'PIX',
         chave_acesso: parsed.chave_acesso || '',
         categoria_geral: parsed.categoria_geral || CATEGORIAS_DESPESA[0],
-        conta_id: contas[0]?.id || '',
         cartao_id: '',
         status_pagamento: 'CONFIRMADO',
-        itens: Array.isArray(parsed.itens) ? parsed.itens : [],
+        itens: Array.isArray(parsed.itens)
+          ? parsed.itens.map((it) => ({
+              ...it,
+              garantia_meses: Number(it.garantia_meses) || 0,
+            }))
+          : [],
       });
 
-      showNotice('Cupom fiscal lido com sucesso pela IA! Confira os dados abaixo.');
+      showNotice('Nota fiscal lida pela IA! Revise os dados e o tempo de garantia abaixo.');
     } catch (err) {
       console.error('Erro na leitura OCR via Gemini:', err);
       showNotice(`Falha ao ler nota fiscal: ${err.message}`, 'error');
     } finally {
       setOcrLoading(false);
+      e.target.value = '';
     }
   };
 
@@ -639,6 +771,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
         valor_unitario: Number(i.valor_unitario) || 0,
         valor_total: Number(i.valor_total) || 0,
         categoria_item: i.categoria_item || CATEGORIAS_DESPESA[0],
+        garantia_meses: Number(i.garantia_meses) || 0,
       }));
 
     setPreviewImage(nf.url_comprovante || null);
@@ -653,7 +786,6 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
       forma_pagamento: nf.forma_pagamento || 'PIX',
       chave_acesso: nf.chave_acesso || '',
       categoria_geral: transacaoVinculada?.categoria || CATEGORIAS_DESPESA[0],
-      conta_id: transacaoVinculada?.conta_id || '',
       cartao_id: transacaoVinculada?.cartao_id || '',
       status_pagamento: transacaoVinculada?.status || 'CONFIRMADO',
       itens: itensDaNota,
@@ -679,7 +811,8 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
     const itemAtual = { ...novosItens[idx], [field]: value };
     if (field === 'quantidade' || field === 'valor_unitario') {
       const qtd = Number(field === 'quantidade' ? value : itemAtual.quantidade) || 0;
-      const unit = Number(field === 'valor_unitario' ? value : itemAtual.valor_unitario) || 0;
+      const unit =
+        Number(field === 'valor_unitario' ? value : itemAtual.valor_unitario) || 0;
       itemAtual.valor_total = Number((qtd * unit).toFixed(2));
     }
     novosItens[idx] = itemAtual;
@@ -699,6 +832,8 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
           valor_unitario: 0,
           valor_total: 0,
           categoria_item: extractedNota.categoria_geral || CATEGORIAS_DESPESA[0],
+          garantia_meses:
+            extractedNota.categoria_geral === 'Eletrônicos & Eletrodomésticos' ? 12 : 0,
         },
       ],
     });
@@ -725,10 +860,11 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
         valor: Number(extractedNota.valor_total) || 0,
         data_competencia: extractedNota.data_emissao,
         data_pagamento:
-          extractedNota.status_pagamento === 'CONFIRMADO' ? extractedNota.data_emissao : null,
+          extractedNota.status_pagamento === 'CONFIRMADO'
+            ? extractedNota.data_emissao
+            : null,
         forma_pagamento: extractedNota.forma_pagamento,
         status: extractedNota.status_pagamento,
-        conta_id: extractedNota.conta_id || null,
         cartao_id: extractedNota.cartao_id || null,
       };
 
@@ -783,24 +919,50 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
       }
 
       if (extractedNota.itens && extractedNota.itens.length > 0) {
-        const itensPayload = extractedNota.itens.map((item) => ({
+        // Tenta gravar usando a coluna garantia_meses (caso já criada via SQL) e embutindo tag segura em categoria_item
+        const itensComColuna = extractedNota.itens.map((item) => ({
           nota_id: notaIdFinal,
           descricao_item: item.descricao_item || 'Item',
           quantidade: Number(item.quantidade) || 1,
           unidade: item.unidade || 'UN',
           valor_unitario: Number(item.valor_unitario) || 0,
           valor_total: Number(item.valor_total) || 0,
-          categoria_item: item.categoria_item || extractedNota.categoria_geral || 'Outros',
+          categoria_item: encodeCategoriaComGarantia(
+            item.categoria_item || extractedNota.categoria_geral || 'Outros',
+            item.garantia_meses
+          ),
+          garantia_meses: Number(item.garantia_meses) || 0,
         }));
 
-        const { error: errItens } = await supabase.from('itens_nota').insert(itensPayload);
-        if (errItens) throw errItens;
+        const { error: errItens } = await supabase
+          .from('itens_nota')
+          .insert(itensComColuna);
+
+        if (errItens) {
+          // Fallback caso a coluna garantia_meses ainda não tenha sido adicionada via ALTER TABLE no Supabase
+          const itensSemColunaExtra = extractedNota.itens.map((item) => ({
+            nota_id: notaIdFinal,
+            descricao_item: item.descricao_item || 'Item',
+            quantidade: Number(item.quantidade) || 1,
+            unidade: item.unidade || 'UN',
+            valor_unitario: Number(item.valor_unitario) || 0,
+            valor_total: Number(item.valor_total) || 0,
+            categoria_item: encodeCategoriaComGarantia(
+              item.categoria_item || extractedNota.categoria_geral || 'Outros',
+              item.garantia_meses
+            ),
+          }));
+          const { error: errFallback } = await supabase
+            .from('itens_nota')
+            .insert(itensSemColunaExtra);
+          if (errFallback) throw errFallback;
+        }
       }
 
       showNotice(
         extractedNota.id
-          ? 'Nota fiscal, itens e pagamento atualizados com sucesso!'
-          : 'Nota fiscal, itens e pagamento lançados com sucesso!'
+          ? 'Nota fiscal, garantias e pagamento atualizados com sucesso!'
+          : 'Nota fiscal, garantias e pagamento lançados com sucesso!'
       );
       setExtractedNota(null);
       setPreviewImage(null);
@@ -829,17 +991,100 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
   };
 
   // ==========================================
-  // NAVEGAÇÃO (5 ABAS)
+  // FUNÇÕES DA LISTA DE SUPERMERCADO
+  // ==========================================
+  const addFromCatalogToShoppingList = (prod) => {
+    setShoppingList((prev) => {
+      const existingIdx = prev.findIndex(
+        (i) => i.descricao_item.trim().toUpperCase() === prod.chave
+      );
+      if (existingIdx >= 0) {
+        const updated = [...prev];
+        updated[existingIdx] = {
+          ...updated[existingIdx],
+          quantidade: Number((Number(updated[existingIdx].quantidade) + 1).toFixed(3)),
+        };
+        return updated;
+      }
+      return [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          descricao_item: prod.descricao_item,
+          quantidade: 1,
+          unidade: prod.unidade || 'un',
+          valor_unitario: Number(prod.ultimo_valor_unitario) || 0,
+          estabelecimento_ref: prod.ultimo_estabelecimento || '',
+          checked: false,
+        },
+      ];
+    });
+    showNotice(`"${prod.descricao_item}" adicionado à lista de compras!`);
+  };
+
+  const handleAddCustomShoppingItem = (e) => {
+    e.preventDefault();
+    if (!customListItem.descricao_item.trim()) return;
+    setShoppingList((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        descricao_item: customListItem.descricao_item.trim(),
+        quantidade: Number(customListItem.quantidade) || 1,
+        unidade: customListItem.unidade || 'un',
+        valor_unitario: Number(customListItem.valor_unitario) || 0,
+        estabelecimento_ref: 'Manual',
+        checked: false,
+      },
+    ]);
+    setCustomListItem({
+      descricao_item: '',
+      quantidade: 1,
+      unidade: 'un',
+      valor_unitario: '',
+    });
+  };
+
+  const updateShoppingItem = (id, field, value) => {
+    setShoppingList((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
+    );
+  };
+
+  const removeShoppingItem = (id) => {
+    setShoppingList((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const resumoListaCompras = useMemo(() => {
+    const totalPrevisto = shoppingList.reduce(
+      (acc, i) => acc + (Number(i.quantidade) || 0) * (Number(i.valor_unitario) || 0),
+      0
+    );
+    const totalNoCarrinho = shoppingList
+      .filter((i) => i.checked)
+      .reduce(
+        (acc, i) => acc + (Number(i.quantidade) || 0) * (Number(i.valor_unitario) || 0),
+        0
+      );
+    return {
+      totalPrevisto,
+      totalNoCarrinho,
+      faltaPegar: totalPrevisto - totalNoCarrinho,
+    };
+  }, [shoppingList]);
+
+  // ==========================================
+  // NAVEGAÇÃO (SEM CONTAS BANCÁRIAS, COM BUSCA E LISTA DE COMPRAS)
   // ==========================================
   const navItems = [
     { id: 'notas', label: 'Notas IA', icon: Receipt },
+    { id: 'busca', label: 'Buscar Itens', icon: Search },
+    { id: 'lista', label: 'Supermercado', icon: ShoppingCart },
     { id: 'pagamentos', label: 'Pagamentos', icon: ArrowDownCircle },
     { id: 'recebimentos', label: 'Recebimentos', icon: ArrowUpCircle },
-    { id: 'contas', label: 'Contas', icon: Wallet },
     { id: 'cartoes', label: 'Cartões', icon: CreditCard },
   ];
 
-  const getContaNome = (id) => contas.find((c) => c.id === id)?.nome_banco || null;
   const getCartaoNome = (id) => cartoes.find((c) => c.id === id)?.nome_cartao || null;
 
   return (
@@ -853,7 +1098,11 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
               : 'bg-emerald-600 text-white'
           }`}
         >
-          {toast.type === 'error' ? <AlertCircle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+          {toast.type === 'error' ? (
+            <AlertCircle className="w-4 h-4" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4" />
+          )}
           <span>{toast.message}</span>
         </div>
       )}
@@ -862,11 +1111,11 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
       <aside className="hidden md:flex md:w-64 md:flex-col md:fixed md:inset-y-0 bg-slate-900 text-white">
         <div className="p-6 flex items-center gap-3 border-b border-slate-800">
           <div className="w-10 h-10 rounded-xl bg-emerald-500 flex items-center justify-center font-bold text-slate-950">
-            <Wallet className="w-6 h-6" />
+            <Receipt className="w-6 h-6" />
           </div>
           <div>
             <h1 className="font-bold text-lg leading-tight">IazFinanças</h1>
-            <p className="text-xs text-slate-400">Gestão & Notas com IA</p>
+            <p className="text-xs text-slate-400">Notas IA, Garantias & Finanças</p>
           </div>
         </div>
 
@@ -906,23 +1155,6 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
       {/* CONTEÚDO PRINCIPAL */}
       <main className="flex-1 md:pl-64">
         <div className="max-w-6xl mx-auto p-4 md:p-8 space-y-6">
-          {/* ALERTA CASO .ENV NÃO ESTEJA CONFIGURADO */}
-          {(!SUPABASE_URL || !SUPABASE_ANON_KEY) && (
-            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3 text-amber-900">
-              <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-              <div className="text-sm">
-                <p className="font-semibold">Configuração pendente do arquivo .env</p>
-                <p className="text-amber-700 mt-0.5">
-                  Copie o arquivo <code className="font-mono bg-amber-100 px-1.5 py-0.5 rounded">.env.example</code> para{' '}
-                  <code className="font-mono bg-amber-100 px-1.5 py-0.5 rounded">.env</code> e preencha{' '}
-                  <code className="font-mono">VITE_SUPABASE_URL</code>,{' '}
-                  <code className="font-mono">VITE_SUPABASE_ANON_KEY</code> e{' '}
-                  <code className="font-mono">VITE_GEMINI_API_KEY</code>.
-                </p>
-              </div>
-            </div>
-          )}
-
           {/* HEADER + SELETOR DE MÊS */}
           <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
@@ -930,7 +1162,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                 {navItems.find((i) => i.id === activeTab)?.label}
               </h2>
               <p className="text-sm text-slate-500">
-                Controle financeiro unificado e leitura inteligente de cupons fiscais
+                Controle de notas fiscais, garantias de eletrônicos, histórico de preços e finanças
               </p>
             </div>
 
@@ -949,14 +1181,14 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
           <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-2xs">
               <div className="flex items-center justify-between text-slate-500 text-xs font-medium uppercase tracking-wider">
-                <span>Saldo Inicial (Contas)</span>
-                <Wallet className="w-4 h-4 text-slate-400" />
+                <span>Notas Fiscais ({selectedMonth})</span>
+                <Receipt className="w-4 h-4 text-slate-400" />
               </div>
               <p className="text-2xl font-bold text-slate-900 mt-2">
-                {formatCurrency(resumo.saldoInicialContas)}
+                {formatCurrency(resumo.totalNotasMes)}
               </p>
               <p className="text-xs text-slate-500 mt-1">
-                {contas.filter((c) => c.ativo !== false).length} conta(s) ativa(s)
+                {resumo.qtdNotasMes} nota(s) emitida(s) no mês
               </p>
             </div>
 
@@ -982,7 +1214,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                 {formatCurrency(resumo.totalPagamentos)}
               </p>
               <p className="text-xs text-slate-500 mt-1">
-                Pago: {formatCurrency(resumo.totalPagoConfirmado)}
+                Confirmado: {formatCurrency(resumo.totalPagoConfirmado)}
               </p>
             </div>
 
@@ -1003,147 +1235,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
           </section>
 
           {/* ==========================================
-              ABA 1 & 2: RECEBIMENTOS OU PAGAMENTOS DO MÊS
-          ========================================== */}
-          {(activeTab === 'recebimentos' || activeTab === 'pagamentos') && (
-            <section className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
-              <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                <div>
-                  <h3 className="font-semibold text-slate-900">
-                    {activeTab === 'recebimentos'
-                      ? 'Recebimentos do Mês'
-                      : 'Pagamentos do Mês'}
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Competência selecionada: {selectedMonth}
-                  </p>
-                </div>
-
-                <button
-                  onClick={() =>
-                    openNewTransacaoModal(
-                      activeTab === 'recebimentos' ? 'RECEBIMENTO' : 'PAGAMENTO'
-                    )
-                  }
-                  className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white shadow-xs cursor-pointer transition ${
-                    activeTab === 'recebimentos'
-                      ? 'bg-emerald-600 hover:bg-emerald-700'
-                      : 'bg-slate-900 hover:bg-slate-800'
-                  }`}
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>
-                    Novo {activeTab === 'recebimentos' ? 'Recebimento' : 'Pagamento'}
-                  </span>
-                </button>
-              </div>
-
-              <div className="divide-y divide-slate-100">
-                {(activeTab === 'recebimentos' ? recebimentosDoMes : pagamentosDoMes)
-                  .length === 0 ? (
-                  <div className="p-10 text-center text-slate-400 text-sm">
-                    Nenhum lançamento encontrado para {selectedMonth}.
-                  </div>
-                ) : (
-                  (activeTab === 'recebimentos'
-                    ? recebimentosDoMes
-                    : pagamentosDoMes
-                  ).map((t) => {
-                    const isConcluido =
-                      t.status === 'CONFIRMADO' ||
-                      t.status === 'PAGO' ||
-                      t.status === 'RECEBIDO';
-                    const contaNome = getContaNome(t.conta_id);
-                    const cartaoNome = getCartaoNome(t.cartao_id);
-
-                    return (
-                      <div
-                        key={t.id}
-                        className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/80 transition"
-                      >
-                        <div className="flex items-start gap-3">
-                          <button
-                            onClick={() => handleToggleStatusTransacao(t)}
-                            title="Alternar status"
-                            className={`mt-0.5 p-2 rounded-xl border cursor-pointer transition ${
-                              isConcluido
-                                ? 'bg-emerald-50 border-emerald-200 text-emerald-600'
-                                : 'bg-amber-50 border-amber-200 text-amber-600'
-                            }`}
-                          >
-                            {isConcluido ? (
-                              <CheckCircle2 className="w-4 h-4" />
-                            ) : (
-                              <Clock className="w-4 h-4" />
-                            )}
-                          </button>
-
-                          <div>
-                            <p className="font-semibold text-slate-900 text-sm">
-                              {t.descricao}
-                            </p>
-                            <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-slate-500">
-                              <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-medium">
-                                {t.categoria}
-                              </span>
-                              <span>• {t.forma_pagamento || 'PIX'}</span>
-                              <span>• Comp: {formatDateBR(t.data_competencia)}</span>
-                              {contaNome && <span>• Conta: {contaNome}</span>}
-                              {cartaoNome && <span>• Cartão: {cartaoNome}</span>}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between sm:justify-end gap-4 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
-                          <div className="text-left sm:text-right">
-                            <p
-                              className={`font-bold text-sm ${
-                                t.tipo === 'RECEBIMENTO'
-                                  ? 'text-emerald-600'
-                                  : 'text-rose-600'
-                              }`}
-                            >
-                              {t.tipo === 'RECEBIMENTO' ? '+' : '-'}{' '}
-                              {formatCurrency(t.valor)}
-                            </p>
-                            <span
-                              className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-                                isConcluido
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : 'bg-amber-100 text-amber-800'
-                              }`}
-                            >
-                              {t.status}
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => openEditTransacaoModal(t)}
-                              className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
-                              title="Editar"
-                            >
-                              <Edit3 className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteTransacao(t.id)}
-                              className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
-                              title="Excluir"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </section>
-          )}
-
-          {/* ==========================================
-              ABA 3: LEITURA DE NOTAS / CUPONS FISCAIS (GEMINI OCR)
+              ABA 1: LEITURA E GESTÃO DE NOTAS FISCAIS + GARANTIAS
           ========================================== */}
           {activeTab === 'notas' && (
             <div className="space-y-6">
@@ -1156,10 +1248,10 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                       <span>OCR Inteligente com Gemini 3.8 Flash</span>
                     </div>
                     <h3 className="text-lg font-bold text-slate-900">
-                      Escanear Nota ou Cupom Fiscal
+                      Escanear Nota ou Cupom Fiscal (Mercado & Eletrônicos)
                     </h3>
                     <p className="text-sm text-slate-500 mt-0.5">
-                      Tire uma foto ou envie a imagem do cupom. A IA identifica o CNPJ, itens, categorias e gera o pagamento automaticamente.
+                      Tire uma foto ou escolha um arquivo. Para eletrônicos, defina o tempo de garantia em meses para acompanhar o vencimento.
                     </p>
                   </div>
 
@@ -1209,7 +1301,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                   </div>
                 </div>
 
-                {/* REVISÃO DOS DADOS EXTRAÍDOS PELA IA */}
+                {/* REVISÃO / EDIÇÃO DOS DADOS DA NOTA */}
                 {extractedNota && (
                   <form
                     onSubmit={handleConfirmAndSaveNota}
@@ -1269,7 +1361,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                       <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div>
                           <label className="block text-xs font-medium text-slate-600 mb-1">
-                            Estabelecimento
+                            Estabelecimento / Loja
                           </label>
                           <input
                             type="text"
@@ -1301,7 +1393,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
 
                         <div>
                           <label className="block text-xs font-medium text-slate-600 mb-1">
-                            Data de Emissão
+                            Data de Emissão (Início da Garantia)
                           </label>
                           <input
                             type="date"
@@ -1400,53 +1492,34 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
 
                         <div>
                           <label className="block text-xs font-medium text-slate-600 mb-1">
-                            Vincular Conta / Cartão
+                            Cartão Vinculado (Opcional)
                           </label>
-                          <div className="grid grid-cols-2 gap-2">
-                            <select
-                              value={extractedNota.conta_id}
-                              onChange={(e) =>
-                                setExtractedNota({
-                                  ...extractedNota,
-                                  conta_id: e.target.value,
-                                })
-                              }
-                              className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-xs bg-white"
-                            >
-                              <option value="">Sem Conta</option>
-                              {contas.map((c) => (
-                                <option key={c.id} value={c.id}>
-                                  {c.nome_banco}
-                                </option>
-                              ))}
-                            </select>
-                            <select
-                              value={extractedNota.cartao_id}
-                              onChange={(e) =>
-                                setExtractedNota({
-                                  ...extractedNota,
-                                  cartao_id: e.target.value,
-                                })
-                              }
-                              className="w-full px-2.5 py-2 rounded-xl border border-slate-200 text-xs bg-white"
-                            >
-                              <option value="">Sem Cartão</option>
-                              {cartoes.map((cr) => (
-                                <option key={cr.id} value={cr.id}>
-                                  {cr.nome_cartao}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
+                          <select
+                            value={extractedNota.cartao_id}
+                            onChange={(e) =>
+                              setExtractedNota({
+                                ...extractedNota,
+                                cartao_id: e.target.value,
+                              })
+                            }
+                            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
+                          >
+                            <option value="">Sem Cartão</option>
+                            {cartoes.map((cr) => (
+                              <option key={cr.id} value={cr.id}>
+                                {cr.nome_cartao}
+                              </option>
+                            ))}
+                          </select>
                         </div>
                       </div>
                     </div>
 
-                    {/* ITENS EXTRAÍDOS / EDITÁVEIS DO CUPOM */}
+                    {/* ITENS EXTRAÍDOS / EDITÁVEIS DO CUPOM COM GARANTIA */}
                     <div>
                       <div className="flex items-center justify-between mb-2">
                         <h5 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                          Itens da Nota ({extractedNota.itens.length})
+                          Itens da Nota & Garantia em Meses ({extractedNota.itens.length})
                         </h5>
                         <button
                           type="button"
@@ -1462,11 +1535,12 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                           <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
                             <tr>
                               <th className="py-2.5 px-2 min-w-[160px]">Item</th>
-                              <th className="py-2.5 px-2 w-20">Qtd</th>
+                              <th className="py-2.5 px-2 w-18">Qtd</th>
                               <th className="py-2.5 px-2 w-16">Unid</th>
                               <th className="py-2.5 px-2 w-24">V. Unit</th>
                               <th className="py-2.5 px-2 w-24">Total</th>
-                              <th className="py-2.5 px-2 min-w-[160px]">Categoria</th>
+                              <th className="py-2.5 px-2 w-32">Garantia (meses)</th>
+                              <th className="py-2.5 px-2 min-w-[150px]">Categoria</th>
                               <th className="py-2.5 px-2 w-10"></th>
                             </tr>
                           </thead>
@@ -1527,6 +1601,26 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                                   />
                                 </td>
                                 <td className="py-1.5 px-2">
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      max="120"
+                                      placeholder="0"
+                                      value={it.garantia_meses ?? 0}
+                                      onChange={(e) =>
+                                        handleItemChange(
+                                          idx,
+                                          'garantia_meses',
+                                          e.target.value
+                                        )
+                                      }
+                                      className="w-16 px-2 py-1 rounded-lg border border-slate-200 text-slate-800 font-semibold"
+                                    />
+                                    <span className="text-[11px] text-slate-400">m</span>
+                                  </div>
+                                </td>
+                                <td className="py-1.5 px-2">
                                   <select
                                     value={it.categoria_item}
                                     onChange={(e) =>
@@ -1576,6 +1670,68 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                 )}
               </div>
 
+              {/* PAINEL DE CONTROLE DE GARANTIAS (PRODUTOS COM GARANTIA > 0) */}
+              {itensEnriquecidos.some((i) => Number(i.garantia_meses) > 0) && (
+                <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-bold text-slate-900 flex items-center gap-2 text-sm">
+                      <ShieldCheck className="w-5 h-5 text-emerald-600" />
+                      <span>Controle de Garantia de Eletrônicos e Produtos</span>
+                    </h3>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {itensEnriquecidos
+                      .filter((i) => Number(i.garantia_meses) > 0)
+                      .map((item) => {
+                        const g = item.garantiaInfo;
+                        return (
+                          <div
+                            key={item.id}
+                            className={`p-3.5 rounded-xl border flex flex-col justify-between gap-2 ${
+                              g?.expirada
+                                ? 'bg-rose-50/60 border-rose-200'
+                                : 'bg-slate-50/70 border-slate-200'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="font-bold text-slate-900 text-sm">
+                                  {item.descricao_item}
+                                </p>
+                                <p className="text-xs text-slate-500 mt-0.5">
+                                  Comprado em {formatDateBR(item.data_compra)} •{' '}
+                                  {item.estabelecimento} • {formatCurrency(item.valor_total)}
+                                </p>
+                              </div>
+                              {g?.expirada ? (
+                                <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0" />
+                              ) : (
+                                <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0" />
+                              )}
+                            </div>
+
+                            {g && (
+                              <div className="flex items-center justify-between pt-2 border-t border-slate-200/60 text-xs">
+                                <span
+                                  className={
+                                    g.expirada
+                                      ? 'font-bold text-rose-600'
+                                      : 'font-semibold text-emerald-700'
+                                  }
+                                >
+                                  {g.texto}
+                                </span>
+                                <span className="text-slate-500">{g.detalhe}</span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
               {/* LISTA DE NOTAS FISCAIS CADASTRADAS */}
               <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
                 <div className="p-5 border-b border-slate-100">
@@ -1611,11 +1767,36 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                                   <span>• {nf.forma_pagamento || 'PIX'}</span>
                                   <span>• {itensDaNota.length} item(ns)</span>
                                 </div>
+
+                                {/* Resumo rápido de garantias da nota */}
+                                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                                  {itensDaNota
+                                    .filter((i) => Number(i.garantia_meses) > 0)
+                                    .map((i) => {
+                                      const g = calcularStatusGarantia(
+                                        nf.data_emissao,
+                                        i.garantia_meses
+                                      );
+                                      if (!g) return null;
+                                      return (
+                                        <span
+                                          key={i.id}
+                                          className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md border ${
+                                            g.expirada
+                                              ? 'bg-rose-50 border-rose-200 text-rose-600 font-bold'
+                                              : 'bg-emerald-50 border-emerald-200 text-emerald-700 font-medium'
+                                          }`}
+                                        >
+                                          {i.descricao_item}: {g.texto}
+                                        </span>
+                                      );
+                                    })}
+                                </div>
                               </div>
                             </div>
 
-                            <div className="flex items-center justify-between sm:justify-end gap-3">
-                              <div className="text-right">
+                            <div className="flex items-center justify-between sm:justify-end gap-2">
+                              <div className="text-right mr-1">
                                 <p className="font-bold text-slate-900 text-sm">
                                   {formatCurrency(nf.valor_total)}
                                 </p>
@@ -1654,7 +1835,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                               <button
                                 onClick={() => handleEditNota(nf)}
                                 className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
-                                title="Editar dados e itens da nota fiscal"
+                                title="Editar dados, itens e garantia da nota fiscal"
                               >
                                 <Edit3 className="w-4 h-4" />
                               </button>
@@ -1678,31 +1859,53 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                                     <th className="py-1.5 px-2">Qtd</th>
                                     <th className="py-1.5 px-2">Unitário</th>
                                     <th className="py-1.5 px-2">Total</th>
+                                    <th className="py-1.5 px-2">Garantia</th>
                                     <th className="py-1.5 px-2">Categoria</th>
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-200/50">
-                                  {itensDaNota.map((item) => (
-                                    <tr key={item.id}>
-                                      <td className="py-1.5 px-2 font-medium text-slate-800">
-                                        {item.descricao_item}
-                                      </td>
-                                      <td className="py-1.5 px-2 text-slate-600">
-                                        {item.quantidade} {item.unidade}
-                                      </td>
-                                      <td className="py-1.5 px-2 text-slate-600">
-                                        {formatCurrency(item.valor_unitario)}
-                                      </td>
-                                      <td className="py-1.5 px-2 font-semibold text-slate-900">
-                                        {formatCurrency(item.valor_total)}
-                                      </td>
-                                      <td className="py-1.5 px-2">
-                                        <span className="bg-white border border-slate-200 px-2 py-0.5 rounded text-[11px] text-slate-600">
-                                          {item.categoria_item}
-                                        </span>
-                                      </td>
-                                    </tr>
-                                  ))}
+                                  {itensDaNota.map((item) => {
+                                    const g = calcularStatusGarantia(
+                                      nf.data_emissao,
+                                      item.garantia_meses
+                                    );
+                                    return (
+                                      <tr key={item.id}>
+                                        <td className="py-1.5 px-2 font-medium text-slate-800">
+                                          {item.descricao_item}
+                                        </td>
+                                        <td className="py-1.5 px-2 text-slate-600">
+                                          {item.quantidade} {item.unidade}
+                                        </td>
+                                        <td className="py-1.5 px-2 text-slate-600">
+                                          {formatCurrency(item.valor_unitario)}
+                                        </td>
+                                        <td className="py-1.5 px-2 font-semibold text-slate-900">
+                                          {formatCurrency(item.valor_total)}
+                                        </td>
+                                        <td className="py-1.5 px-2">
+                                          {g ? (
+                                            <span
+                                              className={
+                                                g.expirada
+                                                  ? 'text-rose-600 font-bold'
+                                                  : 'text-emerald-700 font-medium'
+                                              }
+                                            >
+                                              {g.texto} ({g.detalhe})
+                                            </span>
+                                          ) : (
+                                            <span className="text-slate-400">-</span>
+                                          )}
+                                        </td>
+                                        <td className="py-1.5 px-2">
+                                          <span className="bg-white border border-slate-200 px-2 py-0.5 rounded text-[11px] text-slate-600">
+                                            {item.categoria_item}
+                                          </span>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
                                 </tbody>
                               </table>
                             </div>
@@ -1717,169 +1920,119 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
           )}
 
           {/* ==========================================
-              ABA 4: CONTAS BANCÁRIAS (contas_bancarias)
+              ABA 2: BUSCA DE ITENS E HISTÓRICO DE PREÇOS / GARANTIAS
           ========================================== */}
-          {activeTab === 'contas' && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <form
-                onSubmit={handleSaveConta}
-                className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4 self-start"
-              >
-                <h3 className="font-bold text-slate-900 flex items-center gap-2">
-                  <Building2 className="w-5 h-5 text-emerald-600" />
+          {activeTab === 'busca' && (
+            <div className="space-y-6">
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="relative flex-1">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Buscar qualquer item das notas (ex: Carne, TV, Notebook, Banana, Loja...)"
+                      value={searchItemQuery}
+                      onChange={(e) => setSearchItemQuery(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 bg-slate-100 px-3.5 py-2.5 rounded-xl cursor-pointer shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={onlyWithWarranty}
+                      onChange={(e) => setOnlyWithWarranty(e.target.checked)}
+                      className="rounded text-emerald-600"
+                    />
+                    <span>Apenas itens com garantia</span>
+                  </label>
+                </div>
+
+                <div className="text-xs text-slate-500 flex items-center justify-between">
                   <span>
-                    {contaForm.id ? 'Editar Conta Bancária' : 'Nova Conta Bancária'}
+                    Exibindo <strong>{resultadosBuscaItens.length}</strong> registro(s) de
+                    compra em <strong>ordem decrescente de data</strong>
                   </span>
-                </h3>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Nome do Banco / Instituição
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ex: Itaú, Nubank, Caixa..."
-                    value={contaForm.nome_banco}
-                    onChange={(e) =>
-                      setContaForm({ ...contaForm, nome_banco: e.target.value })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm"
-                  />
                 </div>
+              </div>
 
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Tipo de Conta
-                  </label>
-                  <select
-                    value={contaForm.tipo_conta}
-                    onChange={(e) =>
-                      setContaForm({ ...contaForm, tipo_conta: e.target.value })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
-                  >
-                    <option value="CORRENTE">Conta Corrente</option>
-                    <option value="POUPANCA">Poupança</option>
-                    <option value="INVESTIMENTO">Investimento / Corretora</option>
-                    <option value="CARTEIRA">Carteira / Caixa Físico</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Saldo Inicial (R$)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    required
-                    placeholder="0.00"
-                    value={contaForm.saldo_inicial}
-                    onChange={(e) =>
-                      setContaForm({ ...contaForm, saldo_inicial: e.target.value })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm"
-                  />
-                </div>
-
-                <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={contaForm.ativo}
-                    onChange={(e) =>
-                      setContaForm({ ...contaForm, ativo: e.target.checked })
-                    }
-                    className="rounded text-emerald-600"
-                  />
-                  <span>Conta ativa</span>
-                </label>
-
-                <div className="flex gap-2 pt-2">
-                  <button
-                    type="submit"
-                    className="flex-1 py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer"
-                  >
-                    {contaForm.id ? 'Salvar Alterações' : 'Cadastrar Conta'}
-                  </button>
-                  {contaForm.id && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setContaForm({
-                          id: null,
-                          nome_banco: '',
-                          tipo_conta: 'CORRENTE',
-                          saldo_inicial: '',
-                          ativo: true,
-                        })
-                      }
-                      className="py-2.5 px-3 rounded-xl border border-slate-200 text-slate-600 text-sm cursor-pointer"
-                    >
-                      Cancelar
-                    </button>
-                  )}
-                </div>
-              </form>
-
-              <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
-                <div className="p-5 border-b border-slate-100">
-                  <h3 className="font-semibold text-slate-900">
-                    Contas Cadastradas ({contas.length})
-                  </h3>
-                </div>
-                {contas.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+                {resultadosBuscaItens.length === 0 ? (
                   <div className="p-10 text-center text-slate-400 text-sm">
-                    Nenhuma conta bancária cadastrada.
+                    Nenhum item encontrado para a busca informada.
                   </div>
                 ) : (
                   <div className="divide-y divide-slate-100">
-                    {contas.map((c) => (
-                      <div
-                        key={c.id}
-                        className="p-4 sm:px-6 flex items-center justify-between gap-4"
-                      >
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="font-semibold text-slate-900 text-sm">
-                              {c.nome_banco}
-                            </p>
-                            {!c.ativo && (
-                              <span className="text-[10px] bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full">
-                                Inativa
+                    {resultadosBuscaItens.map((it) => {
+                      const g = it.garantiaInfo;
+                      return (
+                        <div
+                          key={it.id}
+                          className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/80 transition"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="font-bold text-slate-900 text-sm">
+                                {it.descricao_item}
+                              </p>
+                              <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-[11px] font-medium">
+                                {it.categoria_item}
                               </span>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                              <span className="inline-flex items-center gap-1 font-medium text-slate-700">
+                                <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                                {formatDateBR(it.data_compra)}
+                              </span>
+                              <span>•</span>
+                              <span className="inline-flex items-center gap-1 text-slate-700">
+                                <Store className="w-3.5 h-3.5 text-slate-400" />
+                                {it.estabelecimento}
+                              </span>
+                              <span>
+                                • Qtd: {it.quantidade} {it.unidade}
+                              </span>
+                            </div>
+
+                            {g && (
+                              <div className="pt-1">
+                                <span
+                                  className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border ${
+                                    g.expirada
+                                      ? 'bg-rose-50 border-rose-200 text-rose-600 font-bold'
+                                      : 'bg-emerald-50 border-emerald-200 text-emerald-700 font-semibold'
+                                  }`}
+                                >
+                                  {g.expirada ? (
+                                    <ShieldAlert className="w-3.5 h-3.5" />
+                                  ) : (
+                                    <ShieldCheck className="w-3.5 h-3.5" />
+                                  )}
+                                  <span>{g.texto}</span>
+                                  <span className="font-normal opacity-80">
+                                    ({g.detalhe})
+                                  </span>
+                                </span>
+                              </div>
                             )}
                           </div>
-                          <p className="text-xs text-slate-500 mt-0.5">{c.tipo_conta}</p>
-                        </div>
 
-                        <div className="flex items-center gap-3">
-                          <span className="font-bold text-slate-900 text-sm">
-                            {formatCurrency(c.saldo_inicial)}
-                          </span>
-                          <button
-                            onClick={() =>
-                              setContaForm({
-                                id: c.id,
-                                nome_banco: c.nome_banco,
-                                tipo_conta: c.tipo_conta,
-                                saldo_inicial: c.saldo_inicial,
-                                ativo: c.ativo !== false,
-                              })
-                            }
-                            className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
-                          >
-                            <Edit3 className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteConta(c.id)}
-                            className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          <div className="flex sm:flex-col items-center sm:items-end justify-between gap-1 border-t sm:border-t-0 pt-2 sm:pt-0 border-slate-100 shrink-0">
+                            <p className="text-xs text-slate-500">
+                              Unitário:{' '}
+                              <strong className="text-slate-800">
+                                {formatCurrency(it.valor_unitario)}
+                              </strong>{' '}
+                              /{it.unidade}
+                            </p>
+                            <p className="text-sm font-bold text-emerald-600">
+                              Total: {formatCurrency(it.valor_total)}
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -1887,7 +2040,446 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
           )}
 
           {/* ==========================================
-              ABA 5: CARTÕES (cartoes)
+              ABA 3: LISTA DE SUPERMERCADO (PRÉVIA DE COMPRAS)
+          ========================================== */}
+          {activeTab === 'lista' && (
+            <div className="space-y-6">
+              {/* RESUMO DA PRÉVIA DA LISTA DE COMPRAS */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                  <span className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                    Prévia Total das Compras
+                  </span>
+                  <p className="text-2xl font-bold text-slate-900 mt-1">
+                    {formatCurrency(resumoListaCompras.totalPrevisto)}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {shoppingList.length} item(ns) na lista
+                  </p>
+                </div>
+
+                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                  <span className="text-xs font-medium uppercase tracking-wider text-emerald-700">
+                    Já no Carrinho (Marcados)
+                  </span>
+                  <p className="text-2xl font-bold text-emerald-600 mt-1">
+                    {formatCurrency(resumoListaCompras.totalNoCarrinho)}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {shoppingList.filter((i) => i.checked).length} item(ns) pegos
+                  </p>
+                </div>
+
+                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                  <span className="text-xs font-medium uppercase tracking-wider text-amber-700">
+                    Falta Pegar
+                  </span>
+                  <p className="text-2xl font-bold text-amber-600 mt-1">
+                    {formatCurrency(resumoListaCompras.faltaPegar)}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {shoppingList.filter((i) => !i.checked).length} item(ns) pendentes
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* CATÁLOGO DE ITENS JÁ CADASTRADOS NAS NOTAS */}
+                <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4 self-start">
+                  <div>
+                    <h3 className="font-bold text-slate-900 text-sm">
+                      Itens já Cadastrados nas Notas ({catalogoSupermercado.length})
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Clique em <strong>+ Lista</strong> para adicionar com o último preço pago
+                    </p>
+                  </div>
+
+                  <div className="relative">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Filtrar itens das notas..."
+                      value={catalogSearch}
+                      onChange={(e) => setCatalogSearch(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs"
+                    />
+                  </div>
+
+                  <div className="max-h-96 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-xl">
+                    {catalogoSupermercado.length === 0 ? (
+                      <div className="p-6 text-center text-xs text-slate-400">
+                        Nenhum item encontrado no catálogo.
+                      </div>
+                    ) : (
+                      catalogoSupermercado.map((prod) => (
+                        <div
+                          key={prod.chave}
+                          className="p-3 flex items-center justify-between gap-2 hover:bg-slate-50"
+                        >
+                          <div className="min-w-0">
+                            <p className="font-semibold text-slate-800 text-xs truncate">
+                              {prod.descricao_item}
+                            </p>
+                            <p className="text-[11px] text-slate-500 truncate">
+                              Último: <strong>{formatCurrency(prod.ultimo_valor_unitario)}</strong> /
+                              {prod.unidade} • {prod.ultimo_estabelecimento} (
+                              {formatDateBR(prod.ultima_data)})
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => addFromCatalogToShoppingList(prod)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shrink-0 cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Lista</span>
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* ADICIONAR ITEM AVULSO MANUAL */}
+                  <form
+                    onSubmit={handleAddCustomShoppingItem}
+                    className="pt-3 border-t border-slate-100 space-y-2.5"
+                  >
+                    <p className="text-xs font-semibold text-slate-700">
+                      Ou adicione um item avulso manualmente:
+                    </p>
+                    <input
+                      type="text"
+                      placeholder="Nome do produto..."
+                      value={customListItem.descricao_item}
+                      onChange={(e) =>
+                        setCustomListItem({
+                          ...customListItem,
+                          descricao_item: e.target.value,
+                        })
+                      }
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs"
+                    />
+                    <div className="grid grid-cols-3 gap-2">
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="Qtd"
+                        value={customListItem.quantidade}
+                        onChange={(e) =>
+                          setCustomListItem({
+                            ...customListItem,
+                            quantidade: e.target.value,
+                          })
+                        }
+                        className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Unid (un, kg)"
+                        value={customListItem.unidade}
+                        onChange={(e) =>
+                          setCustomListItem({
+                            ...customListItem,
+                            unidade: e.target.value,
+                          })
+                        }
+                        className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs"
+                      />
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="R$ Unit."
+                        value={customListItem.valor_unitario}
+                        onChange={(e) =>
+                          setCustomListItem({
+                            ...customListItem,
+                            valor_unitario: e.target.value,
+                          })
+                        }
+                        className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="w-full py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer"
+                    >
+                      + Adicionar Item Avulso
+                    </button>
+                  </form>
+                </div>
+
+                {/* MINHA LISTA DE SUPERMERCADO ATUAL */}
+                <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden flex flex-col">
+                  <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+                    <div>
+                      <h3 className="font-bold text-slate-900 text-sm">
+                        Minha Lista de Supermercado ({shoppingList.length})
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Ajuste as quantidades ou valores unitários para simular sua compra
+                      </p>
+                    </div>
+                    {shoppingList.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShoppingList([])}
+                        className="text-xs text-rose-600 hover:underline cursor-pointer"
+                      >
+                        Limpar lista
+                      </button>
+                    )}
+                  </div>
+
+                  {shoppingList.length === 0 ? (
+                    <div className="p-10 text-center text-slate-400 text-sm">
+                      Sua lista está vazia. Selecione produtos ao lado para calcular a prévia!
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100">
+                      {shoppingList.map((item) => {
+                        const subtotal =
+                          (Number(item.quantidade) || 0) *
+                          (Number(item.valor_unitario) || 0);
+                        return (
+                          <div
+                            key={item.id}
+                            className={`p-3.5 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                              item.checked ? 'bg-emerald-50/40' : ''
+                            }`}
+                          >
+                            <label className="flex items-start gap-3 cursor-pointer flex-1">
+                              <input
+                                type="checkbox"
+                                checked={item.checked}
+                                onChange={(e) =>
+                                  updateShoppingItem(
+                                    item.id,
+                                    'checked',
+                                    e.target.checked
+                                  )
+                                }
+                                className="mt-1 rounded text-emerald-600"
+                              />
+                              <div>
+                                <p
+                                  className={`font-semibold text-sm ${
+                                    item.checked
+                                      ? 'line-through text-slate-400'
+                                      : 'text-slate-900'
+                                  }`}
+                                >
+                                  {item.descricao_item}
+                                </p>
+                                {item.estabelecimento_ref && (
+                                  <p className="text-[11px] text-slate-400">
+                                    Ref: {item.estabelecimento_ref}
+                                  </p>
+                                )}
+                              </div>
+                            </label>
+
+                            <div className="flex items-center justify-between sm:justify-end gap-2">
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  value={item.quantidade}
+                                  onChange={(e) =>
+                                    updateShoppingItem(
+                                      item.id,
+                                      'quantidade',
+                                      e.target.value
+                                    )
+                                  }
+                                  className="w-16 px-2 py-1 rounded-lg border border-slate-200 text-xs text-center font-medium"
+                                />
+                                <span className="text-xs text-slate-500">
+                                  {item.unidade}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs text-slate-400">× R$</span>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  value={item.valor_unitario}
+                                  onChange={(e) =>
+                                    updateShoppingItem(
+                                      item.id,
+                                      'valor_unitario',
+                                      e.target.value
+                                    )
+                                  }
+                                  className="w-20 px-2 py-1 rounded-lg border border-slate-200 text-xs font-medium"
+                                />
+                              </div>
+
+                              <div className="w-24 text-right font-bold text-slate-900 text-xs">
+                                {formatCurrency(subtotal)}
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => removeShoppingItem(item.id)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg cursor-pointer"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ==========================================
+              ABA 4 & 5: PAGAMENTOS OU RECEBIMENTOS DO MÊS
+          ========================================== */}
+          {(activeTab === 'recebimentos' || activeTab === 'pagamentos') && (
+            <section className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+              <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-slate-900">
+                    {activeTab === 'recebimentos'
+                      ? 'Recebimentos do Mês'
+                      : 'Pagamentos do Mês'}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Competência selecionada: {selectedMonth}
+                  </p>
+                </div>
+
+                <button
+                  onClick={() =>
+                    openNewTransacaoModal(
+                      activeTab === 'recebimentos' ? 'RECEBIMENTO' : 'PAGAMENTO'
+                    )
+                  }
+                  className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white shadow-xs cursor-pointer transition ${
+                    activeTab === 'recebimentos'
+                      ? 'bg-emerald-600 hover:bg-emerald-700'
+                      : 'bg-slate-900 hover:bg-slate-800'
+                  }`}
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>
+                    Novo {activeTab === 'recebimentos' ? 'Recebimento' : 'Pagamento'}
+                  </span>
+                </button>
+              </div>
+
+              <div className="divide-y divide-slate-100">
+                {(activeTab === 'recebimentos' ? recebimentosDoMes : pagamentosDoMes)
+                  .length === 0 ? (
+                  <div className="p-10 text-center text-slate-400 text-sm">
+                    Nenhum lançamento encontrado para {selectedMonth}.
+                  </div>
+                ) : (
+                  (activeTab === 'recebimentos'
+                    ? recebimentosDoMes
+                    : pagamentosDoMes
+                  ).map((t) => {
+                    const isConcluido =
+                      t.status === 'CONFIRMADO' ||
+                      t.status === 'PAGO' ||
+                      t.status === 'RECEBIDO';
+                    const cartaoNome = getCartaoNome(t.cartao_id);
+
+                    return (
+                      <div
+                        key={t.id}
+                        className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/80 transition"
+                      >
+                        <div className="flex items-start gap-3">
+                          <button
+                            onClick={() => handleToggleStatusTransacao(t)}
+                            title="Alternar status"
+                            className={`mt-0.5 p-2 rounded-xl border cursor-pointer transition ${
+                              isConcluido
+                                ? 'bg-emerald-50 border-emerald-200 text-emerald-600'
+                                : 'bg-amber-50 border-amber-200 text-amber-600'
+                            }`}
+                          >
+                            {isConcluido ? (
+                              <CheckCircle2 className="w-4 h-4" />
+                            ) : (
+                              <Clock className="w-4 h-4" />
+                            )}
+                          </button>
+
+                          <div>
+                            <p className="font-semibold text-slate-900 text-sm">
+                              {t.descricao}
+                            </p>
+                            <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-slate-500">
+                              <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-medium">
+                                {t.categoria}
+                              </span>
+                              <span>• {t.forma_pagamento || 'PIX'}</span>
+                              <span>• Comp: {formatDateBR(t.data_competencia)}</span>
+                              {cartaoNome && <span>• Cartão: {cartaoNome}</span>}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between sm:justify-end gap-4 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                          <div className="text-left sm:text-right">
+                            <p
+                              className={`font-bold text-sm ${
+                                t.tipo === 'RECEBIMENTO'
+                                  ? 'text-emerald-600'
+                                  : 'text-rose-600'
+                              }`}
+                            >
+                              {t.tipo === 'RECEBIMENTO' ? '+' : '-'}{' '}
+                              {formatCurrency(t.valor)}
+                            </p>
+                            <span
+                              className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                                isConcluido
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : 'bg-amber-100 text-amber-800'
+                              }`}
+                            >
+                              {t.status}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => openEditTransacaoModal(t)}
+                              className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
+                              title="Editar"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteTransacao(t.id)}
+                              className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                              title="Excluir"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* ==========================================
+              ABA 6: CARTÕES (cartoes)
           ========================================== */}
           {activeTab === 'cartoes' && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -2009,26 +2601,6 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Conta Bancária Vinculada
-                  </label>
-                  <select
-                    value={cartaoForm.conta_id}
-                    onChange={(e) =>
-                      setCartaoForm({ ...cartaoForm, conta_id: e.target.value })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
-                  >
-                    <option value="">Nenhuma conta vinculada</option>
-                    {contas.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.nome_banco}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
                 <div className="flex gap-2 pt-2">
                   <button
                     type="submit"
@@ -2048,7 +2620,6 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                           limite: '',
                           dia_fechamento: 1,
                           dia_vencimento: 10,
-                          conta_id: '',
                           ativo: true,
                         })
                       }
@@ -2084,9 +2655,6 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                           <p className="text-xs text-slate-500 mt-0.5">
                             {cr.bandeira} • {cr.tipo} • Fecha dia {cr.dia_fechamento} / Vence
                             dia {cr.dia_vencimento}
-                            {getContaNome(cr.conta_id)
-                              ? ` • Conta: ${getContaNome(cr.conta_id)}`
-                              : ''}
                           </p>
                         </div>
 
@@ -2107,7 +2675,6 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                                 limite: cr.limite ?? '',
                                 dia_fechamento: cr.dia_fechamento || 1,
                                 dia_vencimento: cr.dia_vencimento || 10,
-                                conta_id: cr.conta_id || '',
                                 ativo: cr.ativo !== false,
                               })
                             }
@@ -2334,53 +2901,32 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
                   >
                     <option value="CONFIRMADO">
-                      CONFIRMADO ({transacaoForm.tipo === 'RECEBIMENTO' ? 'Recebido' : 'Pago'})
+                      CONFIRMADO (
+                      {transacaoForm.tipo === 'RECEBIMENTO' ? 'Recebido' : 'Pago'})
                     </option>
                     <option value="PENDENTE">PENDENTE</option>
                   </select>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Conta Bancária
-                  </label>
-                  <select
-                    value={transacaoForm.conta_id}
-                    onChange={(e) =>
-                      setTransacaoForm({ ...transacaoForm, conta_id: e.target.value })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
-                  >
-                    <option value="">Nenhuma</option>
-                    {contas.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.nome_banco}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Cartão
-                  </label>
-                  <select
-                    value={transacaoForm.cartao_id}
-                    onChange={(e) =>
-                      setTransacaoForm({ ...transacaoForm, cartao_id: e.target.value })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
-                  >
-                    <option value="">Nenhum</option>
-                    {cartoes.map((cr) => (
-                      <option key={cr.id} value={cr.id}>
-                        {cr.nome_cartao}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Cartão (Opcional)
+                </label>
+                <select
+                  value={transacaoForm.cartao_id}
+                  onChange={(e) =>
+                    setTransacaoForm({ ...transacaoForm, cartao_id: e.target.value })
+                  }
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
+                >
+                  <option value="">Nenhum</option>
+                  {cartoes.map((cr) => (
+                    <option key={cr.id} value={cr.id}>
+                      {cr.nome_cartao}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
@@ -2412,7 +2958,7 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}
-              className={`flex flex-col items-center justify-center py-1 px-2 rounded-xl text-[11px] font-medium transition cursor-pointer ${
+              className={`flex flex-col items-center justify-center py-1 px-1.5 rounded-xl text-[10px] font-medium transition cursor-pointer ${
                 active ? 'text-emerald-600 font-semibold' : 'text-slate-500'
               }`}
             >
