@@ -28,9 +28,6 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install dependencies and build web app
         run: |
           npm install
@@ -50,7 +47,7 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-daemon
           cp app/build/outputs/apk/debug/app-debug.apk ../SuperFarma-IAZ.apk
 
       - name: Upload APK Artifact
