@@ -227,6 +227,13 @@ export default function App() {
   const [expandedNotaId, setExpandedNotaId] = useState(null);
   const [viewingComprovante, setViewingComprovante] = useState(null);
 
+  // Estados de Importação de Notas Fiscais em Lote (50+ notas de Supermercado, Farmácia, etc.)
+  const [batchQueue, setBatchQueue] = useState([]);
+  const [batchProcessing, setBatchProcessing] = useState(false);
+  const [batchCategoryOverride, setBatchCategoryOverride] = useState('AUTO');
+  const [batchCartaoId, setBatchCartaoId] = useState('');
+  const [batchSkipDuplicates, setBatchSkipDuplicates] = useState(true);
+
   // Estados da Aba de Busca de Itens
   const [searchItemQuery, setSearchItemQuery] = useState('');
   const [onlyWithWarranty, setOnlyWithWarranty] = useState(false);
@@ -740,10 +747,38 @@ export default function App() {
   // ==========================================
   const fileToBase64 = (file) =>
     new Promise((resolve, reject) => {
+      const lowerName = (file.name || '').toLowerCase();
+      const isTextOrXml =
+        file.type === 'text/xml' ||
+        file.type === 'application/xml' ||
+        file.type === 'text/plain' ||
+        file.type === 'text/html' ||
+        lowerName.endsWith('.xml') ||
+        lowerName.endsWith('.txt') ||
+        lowerName.endsWith('.html');
+
+      if (isTextOrXml) {
+        const textReader = new FileReader();
+        textReader.onload = () => {
+          const textContent = String(textReader.result || '');
+          const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(textContent)}`;
+          resolve({
+            base64Data: '',
+            textContent,
+            dataUrl,
+            mimeType: 'text/plain',
+          });
+        };
+        textReader.onerror = reject;
+        textReader.readAsText(file);
+        return;
+      }
+
       const reader = new FileReader();
       reader.onload = () => {
         const result = reader.result;
-        const mimeType = file.type || 'image/jpeg';
+        const mimeType =
+          file.type || (lowerName.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
         if (mimeType.startsWith('image/')) {
           const img = new Image();
           img.onload = () => {
@@ -790,82 +825,105 @@ export default function App() {
       reader.readAsDataURL(file);
     });
 
-  const extrairNotaViaGemini = async (base64Data, mimeType) => {
+  const extrairNotaViaGemini = async (base64Data, mimeType, textContent = '') => {
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.8-flash',
-      input: [
-        {
-          type: mimeType === 'application/pdf' ? 'document' : 'image',
-          mime_type: mimeType,
-          data: base64Data,
-        },
-        {
-          type: 'text',
-          text: `Analise esta Nota Fiscal / Cupom Fiscal brasileiro (NFC-e, NF-e, DANFE ou SAT) e extraia todos os dados estruturados.
+    const promptInstrucao = `Analise esta Nota Fiscal / Cupom Fiscal brasileiro (NFC-e, NF-e, DANFE, XML ou SAT) e extraia todos os dados estruturados.
 Classifique cada item e a categoria geral usando uma destas categorias: ${CATEGORIAS_DESPESA.join(', ')}.
+Dica importante: se for supermercado/atacarejo/hortifruti/padaria, use "Alimentação & Supermercado"; se for farmácia/drogaria/medicamentos/higiene, use "Saúde & Farmácia".
 Para data_emissao, retorne no formato YYYY-MM-DD.
 Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cartão de Débito, Dinheiro, Boleto ou Outros.
-Para cada item, preencha garantia_meses (número inteiro de meses de garantia): se for um produto eletrônico, eletrodoméstico, informática ou equipamento durável, informe o tempo de garantia escrito na nota ou 12 meses por padrão; se for alimento/supermercado/farmácia/consumível sem garantia durável, retorne 0.`,
-        },
-      ],
-      response_format: [
-        {
-          type: 'text',
-          mime_type: 'application/json',
-          schema: {
-            type: 'object',
-            properties: {
-              estabelecimento: { type: 'string' },
-              cnpj: { type: 'string' },
-              data_emissao: { type: 'string' },
-              valor_total: { type: 'number' },
-              desconto: { type: 'number' },
-              forma_pagamento: { type: 'string' },
-              chave_acesso: { type: 'string' },
-              categoria_geral: { type: 'string' },
-              itens: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    descricao_item: { type: 'string' },
-                    quantidade: { type: 'number' },
-                    unidade: { type: 'string' },
-                    valor_unitario: { type: 'number' },
-                    valor_total: { type: 'number' },
-                    categoria_item: { type: 'string' },
-                    garantia_meses: { type: 'number' },
+Para cada item, preencha garantia_meses (número inteiro de meses de garantia): se for um produto eletrônico, eletrodoméstico, informática ou equipamento durável, informe o tempo de garantia escrito na nota ou 12 meses por padrão; se for alimento/supermercado/farmácia/consumível sem garantia durável, retorne 0.`;
+
+    const inputParts = textContent
+      ? [
+          {
+            type: 'text',
+            text: `${promptInstrucao}\n\nCONTEÚDO DO ARQUIVO DA NOTA FISCAL:\n${textContent.slice(0, 60000)}`,
+          },
+        ]
+      : [
+          {
+            type: mimeType === 'application/pdf' ? 'document' : 'image',
+            mime_type: mimeType,
+            data: base64Data,
+          },
+          {
+            type: 'text',
+            text: promptInstrucao,
+          },
+        ];
+
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const interaction = await ai.interactions.create({
+          model: 'gemini-3.8-flash',
+          input: inputParts,
+          response_format: [
+            {
+              type: 'text',
+              mime_type: 'application/json',
+              schema: {
+                type: 'object',
+                properties: {
+                  estabelecimento: { type: 'string' },
+                  cnpj: { type: 'string' },
+                  data_emissao: { type: 'string' },
+                  valor_total: { type: 'number' },
+                  desconto: { type: 'number' },
+                  forma_pagamento: { type: 'string' },
+                  chave_acesso: { type: 'string' },
+                  categoria_geral: { type: 'string' },
+                  itens: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        descricao_item: { type: 'string' },
+                        quantidade: { type: 'number' },
+                        unidade: { type: 'string' },
+                        valor_unitario: { type: 'number' },
+                        valor_total: { type: 'number' },
+                        categoria_item: { type: 'string' },
+                        garantia_meses: { type: 'number' },
+                      },
+                      required: [
+                        'descricao_item',
+                        'quantidade',
+                        'unidade',
+                        'valor_unitario',
+                        'valor_total',
+                        'categoria_item',
+                        'garantia_meses',
+                      ],
+                    },
                   },
-                  required: [
-                    'descricao_item',
-                    'quantidade',
-                    'unidade',
-                    'valor_unitario',
-                    'valor_total',
-                    'categoria_item',
-                    'garantia_meses',
-                  ],
                 },
+                required: [
+                  'estabelecimento',
+                  'cnpj',
+                  'data_emissao',
+                  'valor_total',
+                  'desconto',
+                  'forma_pagamento',
+                  'chave_acesso',
+                  'categoria_geral',
+                  'itens',
+                ],
               },
             },
-            required: [
-              'estabelecimento',
-              'cnpj',
-              'data_emissao',
-              'valor_total',
-              'desconto',
-              'forma_pagamento',
-              'chave_acesso',
-              'categoria_geral',
-              'itens',
-            ],
-          },
-        },
-      ],
-    });
+          ],
+        });
 
-    return JSON.parse(interaction.output_text || '{}');
+        return JSON.parse(interaction.output_text || '{}');
+      } catch (err) {
+        lastErr = err;
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, attempt * 2000));
+        }
+      }
+    }
+    throw lastErr;
   };
 
   const handleFileUpload = async (e) => {
@@ -882,10 +940,10 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
 
     setOcrLoading(true);
     try {
-      const { base64Data, dataUrl, mimeType } = await fileToBase64(file);
+      const { base64Data, dataUrl, mimeType, textContent } = await fileToBase64(file);
       setPreviewImage(dataUrl);
 
-      const parsed = await extrairNotaViaGemini(base64Data, mimeType);
+      const parsed = await extrairNotaViaGemini(base64Data, mimeType, textContent);
       const today = new Date().toISOString().split('T')[0];
 
       setExtractedNota({
@@ -1147,6 +1205,241 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
       showNotice(`Erro ao remover nota: ${err.message}`, 'error');
     }
   };
+
+  // ==========================================
+  // IMPORTAÇÃO DE NOTAS FISCAIS EM LOTE (50+ NOTAS DE SUPERMERCADO, FARMÁCIA, ETC.)
+  // ==========================================
+  const runBatchItems = async (itemsToRun, categoryOverride, cartaoId, skipDuplicates) => {
+    if (!supabase) {
+      showNotice('Configure o Supabase no .env para salvar as notas.', 'error');
+      return;
+    }
+    if (!GEMINI_API_KEY) {
+      showNotice('Configure VITE_GEMINI_API_KEY no .env para leitura com IA.', 'error');
+      return;
+    }
+
+    setBatchProcessing(true);
+
+    // Conjunto de chaves de acesso já existentes para evitar duplicidade se ativo
+    const chavesExistentes = new Set(
+      notasFiscais
+        .map((n) => String(n.chave_acesso || '').replace(/\D/g, ''))
+        .filter((ch) => ch.length >= 20)
+    );
+
+    let cursor = 0;
+    const concurrency = 2; // Processa 2 notas simultaneamente para velocidade e segurança contra rate-limit
+    let savedCount = 0;
+    let errorCount = 0;
+    let duplicateCount = 0;
+
+    const worker = async () => {
+      while (cursor < itemsToRun.length) {
+        const currentIndex = cursor++;
+        const queueItem = itemsToRun[currentIndex];
+        if (!queueItem) continue;
+
+        setBatchQueue((prev) =>
+          prev.map((q) =>
+            q.id === queueItem.id
+              ? { ...q, status: 'PROCESSANDO', errorMsg: '' }
+              : q
+          )
+        );
+
+        try {
+          const { base64Data, dataUrl, mimeType, textContent } = await fileToBase64(
+            queueItem.file
+          );
+          const parsed = await extrairNotaViaGemini(base64Data, mimeType, textContent);
+          const today = new Date().toISOString().split('T')[0];
+
+          const chaveLimpa = String(parsed.chave_acesso || '').replace(/\D/g, '');
+          if (skipDuplicates && chaveLimpa.length >= 20 && chavesExistentes.has(chaveLimpa)) {
+            duplicateCount++;
+            setBatchQueue((prev) =>
+              prev.map((q) =>
+                q.id === queueItem.id
+                  ? {
+                      ...q,
+                      status: 'DUPLICADA',
+                      estabelecimento: parsed.estabelecimento || 'Nota já cadastrada',
+                      data_emissao: parsed.data_emissao || today,
+                      valor_total: Number(parsed.valor_total) || 0,
+                      qtd_itens: Array.isArray(parsed.itens) ? parsed.itens.length : 0,
+                      categoria:
+                        categoryOverride !== 'AUTO'
+                          ? categoryOverride
+                          : parsed.categoria_geral || CATEGORIAS_DESPESA[0],
+                    }
+                  : q
+              )
+            );
+            continue;
+          }
+
+          if (chaveLimpa.length >= 20) {
+            chavesExistentes.add(chaveLimpa);
+          }
+
+          const catFinal =
+            categoryOverride !== 'AUTO'
+              ? categoryOverride
+              : parsed.categoria_geral || CATEGORIAS_DESPESA[0];
+
+          const notaObj = {
+            estabelecimento:
+              parsed.estabelecimento || 'Estabelecimento Não Identificado',
+            cnpj: parsed.cnpj || '',
+            data_emissao: parsed.data_emissao || today,
+            valor_total: Number(parsed.valor_total) || 0,
+            desconto: Number(parsed.desconto) || 0,
+            forma_pagamento: parsed.forma_pagamento || 'PIX',
+            chave_acesso: parsed.chave_acesso || '',
+            categoria_geral: catFinal,
+            cartao_id: cartaoId || '',
+            status_pagamento: 'CONFIRMADO',
+            itens: Array.isArray(parsed.itens)
+              ? parsed.itens.map((it) => ({
+                  ...it,
+                  categoria_item:
+                    categoryOverride !== 'AUTO'
+                      ? categoryOverride
+                      : it.categoria_item || catFinal,
+                  garantia_meses: Number(it.garantia_meses) || 0,
+                }))
+              : [],
+          };
+
+          await salvarNotaCompletaNoBanco(notaObj, dataUrl);
+          savedCount++;
+
+          setBatchQueue((prev) =>
+            prev.map((q) =>
+              q.id === queueItem.id
+                ? {
+                    ...q,
+                    status: 'SUCESSO',
+                    estabelecimento: notaObj.estabelecimento,
+                    data_emissao: notaObj.data_emissao,
+                    valor_total: notaObj.valor_total,
+                    qtd_itens: notaObj.itens.length,
+                    categoria: catFinal,
+                  }
+                : q
+            )
+          );
+        } catch (err) {
+          console.error(`Erro no arquivo ${queueItem.fileName}:`, err);
+          errorCount++;
+          setBatchQueue((prev) =>
+            prev.map((q) =>
+              q.id === queueItem.id
+                ? {
+                    ...q,
+                    status: 'ERRO',
+                    errorMsg: err.message || 'Falha ao ler/salvar nota',
+                  }
+                : q
+            )
+          );
+        }
+      }
+    };
+
+    const workers = Array.from(
+      { length: Math.min(concurrency, itemsToRun.length) },
+      () => worker()
+    );
+    await Promise.all(workers);
+
+    setBatchProcessing(false);
+    await fetchAllData();
+
+    if (errorCount === 0) {
+      showNotice(
+        `Lote concluído! ${savedCount} nota(s) importada(s) com sucesso${
+          duplicateCount > 0 ? ` (${duplicateCount} duplicada(s) ignorada(s))` : ''
+        }.`
+      );
+    } else {
+      showNotice(
+        `Lote finalizado: ${savedCount} salva(s), ${errorCount} com erro. Você pode clicar em "Reprocessar Falhas".`,
+        'error'
+      );
+    }
+  };
+
+  const handleBatchFilesUpload = async (e) => {
+    const fileList = Array.from(e.target.files || []);
+    if (fileList.length === 0) return;
+
+    const newQueueItems = fileList.map((file) => ({
+      id: crypto.randomUUID(),
+      file,
+      fileName: file.name,
+      fileSizeKB: Math.max(1, Math.round(file.size / 1024)),
+      status: 'PENDENTE', // PENDENTE | PROCESSANDO | SUCESSO | DUPLICADA | ERRO
+      estabelecimento: '',
+      data_emissao: '',
+      valor_total: 0,
+      qtd_itens: 0,
+      categoria: '',
+      errorMsg: '',
+    }));
+
+    setBatchQueue((prev) => [...prev, ...newQueueItems]);
+    e.target.value = '';
+
+    await runBatchItems(
+      newQueueItems,
+      batchCategoryOverride,
+      batchCartaoId,
+      batchSkipDuplicates
+    );
+  };
+
+  const handleRetryFailedBatch = async () => {
+    const failedItems = batchQueue.filter((q) => q.status === 'ERRO');
+    if (failedItems.length === 0 || batchProcessing) return;
+    await runBatchItems(
+      failedItems,
+      batchCategoryOverride,
+      batchCartaoId,
+      batchSkipDuplicates
+    );
+  };
+
+  const batchSummary = useMemo(() => {
+    const total = batchQueue.length;
+    const sucesso = batchQueue.filter((q) => q.status === 'SUCESSO').length;
+    const duplicadas = batchQueue.filter((q) => q.status === 'DUPLICADA').length;
+    const erro = batchQueue.filter((q) => q.status === 'ERRO').length;
+    const processando = batchQueue.filter((q) => q.status === 'PROCESSANDO').length;
+    const pendente = batchQueue.filter((q) => q.status === 'PENDENTE').length;
+    const concluidos = sucesso + duplicadas + erro;
+    const percentual = total > 0 ? Math.round((concluidos / total) * 100) : 0;
+    const valorTotalImportado = batchQueue
+      .filter((q) => q.status === 'SUCESSO')
+      .reduce((acc, q) => acc + (Number(q.valor_total) || 0), 0);
+    const totalItensImportados = batchQueue
+      .filter((q) => q.status === 'SUCESSO')
+      .reduce((acc, q) => acc + (Number(q.qtd_itens) || 0), 0);
+
+    return {
+      total,
+      sucesso,
+      duplicadas,
+      erro,
+      processando,
+      pendente,
+      concluidos,
+      percentual,
+      valorTotalImportado,
+      totalItensImportados,
+    };
+  }, [batchQueue]);
 
   // ==========================================
   // FUNÇÕES INTELIGENTES DE LISTA DE COMPRAS (SUPERMERCADO & FARMÁCIA)
@@ -1585,8 +1878,8 @@ ${JSON.stringify(itensDaNota)}`,
 
     setAiListLoading(true);
     try {
-      const { base64Data, dataUrl, mimeType } = await fileToBase64(file);
-      const parsedNota = await extrairNotaViaGemini(base64Data, mimeType);
+      const { base64Data, dataUrl, mimeType, textContent } = await fileToBase64(file);
+      const parsedNota = await extrairNotaViaGemini(base64Data, mimeType, textContent);
       const today = new Date().toISOString().split('T')[0];
 
       const notaParaSalvar = {
@@ -1996,12 +2289,260 @@ ${JSON.stringify(itensDaNota)}`,
                       )}
                       <input
                         type="file"
-                        accept="image/*,application/pdf"
+                        accept="image/*,application/pdf,.xml,text/xml,application/xml"
                         onChange={handleFileUpload}
                         disabled={ocrLoading}
                         className="hidden"
                       />
                     </label>
+                  </div>
+                </div>
+
+                {/* ==========================================
+                    SEÇÃO DE IMPORTAÇÃO DE NOTAS FISCAIS EM LOTE (50+ ARQUIVOS)
+                ========================================== */}
+                <div className="mt-6 pt-6 border-t border-slate-200 space-y-4">
+                  <div className="bg-indigo-50/60 border border-indigo-200 rounded-2xl p-5 space-y-4">
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                      <div>
+                        <div className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-700 bg-indigo-100 px-2.5 py-1 rounded-full mb-1.5">
+                          <Sparkles className="w-3.5 h-3.5" />
+                          <span>Importação Automática em Lote (Supermercado, Farmácia & Outros)</span>
+                        </div>
+                        <h4 className="text-base font-bold text-slate-900">
+                          Importar Múltiplas Notas Fiscais de Uma Vez (Ex: 50+ Notas)
+                        </h4>
+                        <p className="text-xs text-slate-600 mt-0.5">
+                          Selecione dezenas de fotos, PDFs ou XMLs de notas fiscais de uma só vez. A IA lê cada nota, classifica os itens (Supermercado, Farmácia, etc.) e grava tudo automaticamente no banco de dados.
+                        </p>
+                      </div>
+
+                      <label
+                        className={`inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl font-bold text-sm shadow-sm transition shrink-0 ${
+                          batchProcessing
+                            ? 'bg-indigo-400 text-white cursor-not-allowed'
+                            : 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer'
+                        }`}
+                      >
+                        {batchProcessing ? (
+                          <>
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                            <span>
+                              Importando ({batchSummary.concluidos}/{batchSummary.total})...
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-5 h-5" />
+                            <span>Selecionar Notas em Lote (Múltiplos Arquivos)</span>
+                          </>
+                        )}
+                        <input
+                          type="file"
+                          multiple
+                          accept="image/*,application/pdf,.xml,text/xml,application/xml"
+                          onChange={handleBatchFilesUpload}
+                          disabled={batchProcessing}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+
+                    {/* OPÇÕES DO LOTE */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-indigo-200/60">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Categoria das Notas do Lote
+                        </label>
+                        <select
+                          value={batchCategoryOverride}
+                          onChange={(e) => setBatchCategoryOverride(e.target.value)}
+                          disabled={batchProcessing}
+                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white font-medium text-slate-800"
+                        >
+                          <option value="AUTO">
+                            Detectar Automaticamente via IA (Supermercado / Farmácia / etc.)
+                          </option>
+                          <option value="Alimentação & Supermercado">
+                            Forçar Todas como: Alimentação & Supermercado
+                          </option>
+                          <option value="Saúde & Farmácia">
+                            Forçar Todas como: Saúde & Farmácia
+                          </option>
+                          {CATEGORIAS_DESPESA.filter(
+                            (c) =>
+                              c !== 'Alimentação & Supermercado' &&
+                              c !== 'Saúde & Farmácia'
+                          ).map((cat) => (
+                            <option key={cat} value={cat}>
+                              Forçar Todas como: {cat}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Cartão Vinculado ao Lote (Opcional)
+                        </label>
+                        <select
+                          value={batchCartaoId}
+                          onChange={(e) => setBatchCartaoId(e.target.value)}
+                          disabled={batchProcessing}
+                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white font-medium text-slate-800"
+                        >
+                          <option value="">Sem Cartão Específico</option>
+                          {cartoes.map((cr) => (
+                            <option key={cr.id} value={cr.id}>
+                              {cr.nome_cartao}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="flex items-end">
+                        <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 px-3 py-2 rounded-xl cursor-pointer w-full">
+                          <input
+                            type="checkbox"
+                            checked={batchSkipDuplicates}
+                            onChange={(e) => setBatchSkipDuplicates(e.target.checked)}
+                            disabled={batchProcessing}
+                            className="rounded text-indigo-600"
+                          />
+                          <span>Ignorar notas duplicadas (mesma chave)</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* PAINEL DE PROGRESSO E FILA DO LOTE */}
+                    {batchQueue.length > 0 && (
+                      <div className="bg-white rounded-xl border border-indigo-200 p-4 space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="space-y-0.5">
+                            <p className="text-xs font-bold text-slate-900">
+                              Progresso do Lote: {batchSummary.concluidos} de{' '}
+                              {batchSummary.total} arquivo(s) processado(s) (
+                              {batchSummary.percentual}%)
+                            </p>
+                            <p className="text-[11px] text-slate-500">
+                              ✅ <strong>{batchSummary.sucesso}</strong> salva(s) • 📦{' '}
+                              <strong>{batchSummary.totalItensImportados}</strong> itens
+                              extraídos • 💰 Total importado:{' '}
+                              <strong>
+                                {formatCurrency(batchSummary.valorTotalImportado)}
+                              </strong>
+                              {batchSummary.duplicadas > 0 &&
+                                ` • ⚠️ ${batchSummary.duplicadas} duplicada(s)`}
+                              {batchSummary.erro > 0 &&
+                                ` • ❌ ${batchSummary.erro} com erro`}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {batchSummary.erro > 0 && !batchProcessing && (
+                              <button
+                                type="button"
+                                onClick={handleRetryFailedBatch}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold cursor-pointer"
+                              >
+                                <RefreshCw className="w-3.5 h-3.5" />
+                                <span>Reprocessar Falhas ({batchSummary.erro})</span>
+                              </button>
+                            )}
+                            {!batchProcessing && (
+                              <button
+                                type="button"
+                                onClick={() => setBatchQueue([])}
+                                className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer"
+                              >
+                                Limpar Fila
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* BARRA DE PROGRESSO */}
+                        <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-indigo-600 transition-all duration-300 rounded-full"
+                            style={{ width: `${batchSummary.percentual}%` }}
+                          />
+                        </div>
+
+                        {/* LISTA DE ARQUIVOS DO LOTE */}
+                        <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-lg">
+                          {batchQueue.map((item, idx) => (
+                            <div
+                              key={item.id}
+                              className="p-2.5 px-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-slate-400 font-mono text-[11px] w-6 shrink-0">
+                                  #{idx + 1}
+                                </span>
+                                {item.status === 'PROCESSANDO' && (
+                                  <Loader2 className="w-4 h-4 text-indigo-600 animate-spin shrink-0" />
+                                )}
+                                {item.status === 'SUCESSO' && (
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                                )}
+                                {item.status === 'DUPLICADA' && (
+                                  <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
+                                )}
+                                {item.status === 'ERRO' && (
+                                  <XCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                                )}
+                                {item.status === 'PENDENTE' && (
+                                  <Clock className="w-4 h-4 text-slate-400 shrink-0" />
+                                )}
+                                <div className="min-w-0">
+                                  <p className="font-semibold text-slate-800 truncate">
+                                    {item.fileName}{' '}
+                                    <span className="font-normal text-slate-400">
+                                      ({item.fileSizeKB} KB)
+                                    </span>
+                                  </p>
+                                  {item.status === 'SUCESSO' && (
+                                    <p className="text-[11px] text-emerald-700 truncate">
+                                      {item.estabelecimento} •{' '}
+                                      {formatDateBR(item.data_emissao)} •{' '}
+                                      <strong>{formatCurrency(item.valor_total)}</strong> •{' '}
+                                      {item.qtd_itens} itens • {item.categoria}
+                                    </p>
+                                  )}
+                                  {item.status === 'DUPLICADA' && (
+                                    <p className="text-[11px] text-amber-700 truncate">
+                                      Nota já existente no banco ({item.estabelecimento}) — ignorada
+                                    </p>
+                                  )}
+                                  {item.status === 'ERRO' && (
+                                    <p className="text-[11px] text-rose-600 truncate">
+                                      Erro: {item.errorMsg}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase shrink-0 self-start sm:self-center ${
+                                  item.status === 'SUCESSO'
+                                    ? 'bg-emerald-50 text-emerald-700'
+                                    : item.status === 'PROCESSANDO'
+                                    ? 'bg-indigo-50 text-indigo-700'
+                                    : item.status === 'DUPLICADA'
+                                    ? 'bg-amber-50 text-amber-700'
+                                    : item.status === 'ERRO'
+                                    ? 'bg-rose-50 text-rose-700'
+                                    : 'bg-slate-100 text-slate-500'
+                                }`}
+                              >
+                                {item.status}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -2763,27 +3304,41 @@ ${JSON.stringify(itensDaNota)}`,
                     </p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handlePredictShoppingListWithAI}
-                    disabled={aiListLoading}
-                    className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm font-semibold shadow-xs cursor-pointer transition shrink-0"
-                  >
-                    {aiListLoading ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Analisando Consumo...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-4 h-4" />
-                        <span>
-                          Prever Lista de{' '}
-                          {currentListType === 'FARMACIA' ? 'Farmácia' : 'Supermercado'} com IA
-                        </span>
-                      </>
-                    )}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBatchCategoryOverride('AUTO');
+                        setActiveTab('notas');
+                      }}
+                      className="inline-flex items-center justify-center gap-1.5 px-3.5 py-3 rounded-xl border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs sm:text-sm font-semibold cursor-pointer transition"
+                    >
+                      <Upload className="w-4 h-4" />
+                      <span>Importar Notas em Lote (50+)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handlePredictShoppingListWithAI}
+                      disabled={aiListLoading}
+                      className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm font-semibold shadow-xs cursor-pointer transition shrink-0"
+                    >
+                      {aiListLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Analisando Consumo...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4" />
+                          <span>
+                            Prever Lista de{' '}
+                            {currentListType === 'FARMACIA' ? 'Farmácia' : 'Supermercado'} com IA
+                          </span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 {currentMeta.analise_ia && (
