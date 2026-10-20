@@ -1,1 +1,111 @@
 @import "tailwindcss";
+
+/* ==========================================
+   SUPORTE COMPLETO A TEMA ESCURO (DARK MODE)
+   ========================================== */
+.dark-theme {
+  background-color: #0b1120 !important;
+  color: #f1f5f9 !important;
+  color-scheme: dark;
+}
+
+.dark-theme .bg-slate-50,
+.dark-theme .bg-slate-50\/80,
+.dark-theme .bg-slate-50\/70 {
+  background-color: #0f172a !important;
+}
+
+.dark-theme .bg-white {
+  background-color: #151f32 !important;
+}
+
+.dark-theme .bg-slate-100 {
+  background-color: #1e293b !important;
+}
+
+.dark-theme .bg-indigo-50,
+.dark-theme .bg-indigo-50\/60,
+.dark-theme .bg-indigo-50\/70 {
+  background-color: rgba(49, 46, 129, 0.28) !important;
+}
+
+.dark-theme .bg-emerald-50,
+.dark-theme .bg-emerald-50\/40,
+.dark-theme .bg-emerald-50\/60 {
+  background-color: rgba(6, 78, 59, 0.3) !important;
+}
+
+.dark-theme .bg-rose-50,
+.dark-theme .bg-rose-50\/60 {
+  background-color: rgba(136, 19, 55, 0.28) !important;
+}
+
+.dark-theme .bg-amber-50 {
+  background-color: rgba(120, 53, 15, 0.3) !important;
+}
+
+.dark-theme .border-slate-200,
+.dark-theme .border-slate-200\/70,
+.dark-theme .border-slate-200\/60,
+.dark-theme .border-slate-300 {
+  border-color: #293548 !important;
+}
+
+.dark-theme .border-slate-100 {
+  border-color: #1e293b !important;
+}
+
+.dark-theme .border-indigo-200,
+.dark-theme .border-indigo-200\/60 {
+  border-color: rgba(99, 102, 241, 0.35) !important;
+}
+
+.dark-theme .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+.dark-theme .divide-slate-200\/50 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #1e293b !important;
+}
+
+.dark-theme .text-slate-900,
+.dark-theme .text-slate-800 {
+  color: #f8fafc !important;
+}
+
+.dark-theme .text-slate-700,
+.dark-theme .text-slate-600 {
+  color: #cbd5e1 !important;
+}
+
+.dark-theme .text-slate-500,
+.dark-theme .text-slate-400 {
+  color: #94a3b8 !important;
+}
+
+.dark-theme .text-indigo-950,
+.dark-theme .text-indigo-800,
+.dark-theme .text-indigo-700 {
+  color: #a5b4fc !important;
+}
+
+.dark-theme .text-emerald-700,
+.dark-theme .text-emerald-800 {
+  color: #6ee7b7 !important;
+}
+
+.dark-theme input:not([type="checkbox"]),
+.dark-theme select,
+.dark-theme textarea {
+  background-color: #0f172a !important;
+  color: #f8fafc !important;
+  border-color: #334155 !important;
+}
+
+.dark-theme input::placeholder,
+.dark-theme textarea::placeholder {
+  color: #64748b !important;
+}
+
+.dark-theme .hover\:bg-slate-50:hover,
+.dark-theme .hover\:bg-slate-50\/80:hover,
+.dark-theme .hover\:bg-slate-100:hover {
+  background-color: #1e293b !important;
+}

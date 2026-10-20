@@ -42,6 +42,12 @@ import {
   Save,
   BrainCircuit,
   ArrowRight,
+  Sun,
+  Moon,
+  QrCode,
+  KeyRound,
+  Package,
+  ExternalLink,
 } from 'lucide-react';
 
 // ==========================================
@@ -119,6 +125,220 @@ const formatMonthLabel = (yyyyMm) => {
   if (!y || !m) return yyyyMm;
   const date = new Date(y, m - 1, 1);
   return date.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+};
+
+// Mapa de UFs e portais SEFAZ para consulta de Chave de Acesso / QR Code
+const UF_POR_CODIGO = {
+  11: 'RO', 12: 'AC', 13: 'AM', 14: 'RR', 15: 'PA', 16: 'AP', 17: 'TO',
+  21: 'MA', 22: 'PI', 23: 'CE', 24: 'RN', 25: 'PB', 26: 'PE', 27: 'AL', 28: 'SE', 29: 'BA',
+  31: 'MG', 32: 'ES', 33: 'RJ', 35: 'SP',
+  41: 'PR', 42: 'SC', 43: 'RS',
+  50: 'MS', 51: 'MT', 52: 'GO', 53: 'DF',
+};
+
+const PORTAL_SEFAZ_UF = {
+  CE: 'https://nfce.sefaz.ce.gov.br/pages/consultaNota.jsf',
+  SP: 'https://satsp.fazenda.sp.gov.br/COMSAT/Public/ConsultaPublica/ConsultaPublicaCfe.aspx',
+  RJ: 'https://consultadfe.fazenda.rj.gov.br/consultaDFe/paginas/consultaChaveAcesso.faces',
+  MG: 'https://portalsped.fazenda.mg.gov.br/portalnfce/sistema/consultaarg.xhtml',
+  PR: 'http://www.fazenda.pr.gov.br/nfce/consulta',
+  RS: 'https://www.sefaz.rs.gov.br/NFCE/NFCE-COM.aspx',
+  SC: 'https://sat.sef.sc.gov.br/tax.NET/Sat.DFe.Web/Consultas/ConsultaPublicaNFe.aspx',
+  BA: 'http://nfe.sefaz.ba.gov.br/servicos/nfce/Modulos/Geral/NFCEC_consulta_chave_acesso.aspx',
+  PE: 'http://nfce.sefaz.pe.gov.br/nfce-web/consultarNfce',
+  DF: 'https://dec.fazenda.df.gov.br/ConsultarNFCe.aspx',
+  GO: 'https://nfeweb.sefaz.go.gov.br/nfeweb/sites/nfce/danfeNFCe',
+  AM: 'https://sistemas.sefaz.am.gov.br/nfceweb/consultarFCE.do',
+};
+
+const formatCNPJ = (digits) => {
+  const clean = String(digits || '').replace(/\D/g, '');
+  if (clean.length !== 14) return clean;
+  return `${clean.slice(0, 2)}.${clean.slice(2, 5)}.${clean.slice(5, 8)}/${clean.slice(8, 12)}-${clean.slice(12, 14)}`;
+};
+
+// Decodifica Chave de Acesso de 44 dígitos ou URL de QR Code da Nota Fiscal (NFC-e / NF-e / SAT)
+const decodificarChaveOuQrCode = (rawInput) => {
+  const texto = String(rawInput || '').trim();
+  if (!texto) return null;
+
+  // Procura sequência de 44 dígitos (mesmo se estiver separada por espaços/pontos na chave ou dentro de URL)
+  const apenasDigitos = texto.replace(/\D/g, '');
+  const match44 = texto.match(/(?:\d[\s.-]*){44}/);
+  let chave44 = '';
+  if (match44) {
+    chave44 = match44[0].replace(/\D/g, '').slice(0, 44);
+  } else if (apenasDigitos.length >= 44) {
+    chave44 = apenasDigitos.slice(0, 44);
+  }
+
+  if (chave44.length !== 44) {
+    return {
+      valida: false,
+      chave44: apenasDigitos.slice(0, 44),
+      urlOriginal: texto.startsWith('http') ? texto : '',
+    };
+  }
+
+  const cUF = chave44.slice(0, 2);
+  const uf = UF_POR_CODIGO[cUF] || 'BR';
+  const aa = chave44.slice(2, 4);
+  const mm = chave44.slice(4, 6);
+  const ano = Number(`20${aa}`);
+  const mesNum = Number(mm);
+  const mesValido = mesNum >= 1 && mesNum <= 12 ? mm : '01';
+  const anoMes = `${ano}-${mesValido}`;
+  const cnpjRaw = chave44.slice(6, 20);
+  const cnpjFormatado = formatCNPJ(cnpjRaw);
+  const modelo = chave44.slice(20, 22);
+  const serie = String(Number(chave44.slice(22, 25)));
+  const numeroNota = String(Number(chave44.slice(25, 34)));
+
+  // Verifica se a URL do QR Code possui dia de emissão ou valor total nos parâmetros (p=chave|2|1|dia|valor...)
+  let diaExtraido = '01';
+  let valorExtraido = 0;
+
+  if (texto.includes('|')) {
+    const partesPipe = texto.split('|');
+    if (partesPipe.length >= 5) {
+      const possivelDia = Number(partesPipe[3]);
+      const possivelValor = Number(String(partesPipe[4]).replace(',', '.'));
+      if (possivelDia >= 1 && possivelDia <= 31) {
+        diaExtraido = String(possivelDia).padStart(2, '0');
+      }
+      if (possivelValor > 0 && possivelValor < 1000000) {
+        valorExtraido = possivelValor;
+      }
+    }
+  }
+
+  const matchVnf = texto.match(/[?&]vNF=([0-9.,]+)/i);
+  if (matchVnf) {
+    valorExtraido = Number(matchVnf[1].replace(',', '.')) || valorExtraido;
+  }
+
+  return {
+    valida: true,
+    chave44,
+    uf,
+    ano,
+    mes: mesValido,
+    anoMes,
+    dataSugerida: `${anoMes}-${diaExtraido}`,
+    cnpjRaw,
+    cnpjFormatado,
+    modelo: modelo === '65' ? 'NFC-e' : modelo === '55' ? 'NF-e' : `Mod ${modelo}`,
+    serie,
+    numeroNota,
+    valorExtraido,
+    urlOriginal: texto.startsWith('http') ? texto : '',
+    portalSefaz: PORTAL_SEFAZ_UF[uf] || 'https://www.nfe.fazenda.gov.br/portal/consultaRecaptcha.aspx',
+  };
+};
+
+// Normaliza e preserva a data real da compra na importação de notas (Agosto, Setembro, Outubro, etc.)
+const resolverDataEmissaoReal = (
+  rawDateFromAI,
+  chaveAcesso,
+  file = null,
+  overrideDate = ''
+) => {
+  const today = new Date().toISOString().split('T')[0];
+
+  // 1. Se o usuário definiu uma data fixa ou mês fixo para o lote
+  if (overrideDate && /^\d{4}-\d{2}-\d{2}$/.test(overrideDate)) {
+    return overrideDate;
+  }
+
+  const infoChave = decodificarChaveOuQrCode(chaveAcesso);
+
+  // Tenta extrair e normalizar a data retornada pela IA (suporta YYYY-MM-DD e DD/MM/YYYY)
+  let aiDateNormalized = '';
+  const rawStr = String(rawDateFromAI || '').trim();
+  if (rawStr) {
+    const isoMatch = rawStr.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    const brMatch = rawStr.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/);
+    if (isoMatch) {
+      const y = Number(isoMatch[1]);
+      const m = String(isoMatch[2]).padStart(2, '0');
+      const d = String(isoMatch[3]).padStart(2, '0');
+      if (y >= 2000 && y <= 2035 && Number(m) >= 1 && Number(m) <= 12) {
+        aiDateNormalized = `${y}-${m}-${d}`;
+      }
+    } else if (brMatch) {
+      const d = String(brMatch[1]).padStart(2, '0');
+      const m = String(brMatch[2]).padStart(2, '0');
+      let y = Number(brMatch[3]);
+      if (y < 100) y += 2000;
+      if (y >= 2000 && y <= 2035 && Number(m) >= 1 && Number(m) <= 12) {
+        aiDateNormalized = `${y}-${m}-${d}`;
+      }
+    }
+  }
+
+  // Se a IA retornou uma data válida que NÃO é a data de hoje (ou seja, estava impressa na nota), confere com a chave e usa ela!
+  if (aiDateNormalized && aiDateNormalized !== today) {
+    if (infoChave?.valida && !aiDateNormalized.startsWith(infoChave.anoMes)) {
+      const diaDaIa = aiDateNormalized.split('-')[2] || '01';
+      return `${infoChave.anoMes}-${diaDaIa}`;
+    }
+    return aiDateNormalized;
+  }
+
+  // 2. Se a nota tem chave de acesso de 44 dígitos, usa o Ano-Mês da chave de acesso!
+  if (infoChave?.valida) {
+    const dia = aiDateNormalized ? aiDateNormalized.split('-')[2] : '01';
+    return `${infoChave.anoMes}-${dia}`;
+  }
+
+  // 3. Procura data ou nome do mês (agosto, setembro, outubro...) no nome do arquivo
+  if (file?.name) {
+    const fname = file.name.toLowerCase();
+    // Padrão YYYYMMDD ou YYYY-MM-DD no nome do arquivo (ex: Screenshot_20260815, IMG-20260910-WA)
+    const fileIsoMatch = fname.match(/(202\d)[-_]?([01]\d)[-_]?([0-3]\d)/);
+    if (fileIsoMatch) {
+      const [, fy, fm, fd] = fileIsoMatch;
+      if (Number(fm) >= 1 && Number(fm) <= 12 && Number(fd) >= 1 && Number(fd) <= 31) {
+        return `${fy}-${fm}-${fd}`;
+      }
+    }
+    // Padrão DD-MM-YYYY no nome do arquivo
+    const fileBrMatch = fname.match(/([0-3]\d)[-_]([01]\d)[-_](202\d)/);
+    if (fileBrMatch) {
+      const [, fd, fm, fy] = fileBrMatch;
+      if (Number(fm) >= 1 && Number(fm) <= 12 && Number(fd) >= 1 && Number(fd) <= 31) {
+        return `${fy}-${fm}-${fd}`;
+      }
+    }
+    // Nome do mês no arquivo (ex: "agosto", "setembro", "outubro")
+    const mesesMap = {
+      janeiro: '01', fevereiro: '02', marco: '03', março: '03', abril: '04',
+      maio: '05', junho: '06', julho: '07', agosto: '08', setembro: '09',
+      outubro: '10', novembro: '11', dezembro: '12',
+    };
+    const currentYear = new Date().getFullYear();
+    for (const [nomeMes, numMes] of Object.entries(mesesMap)) {
+      if (fname.includes(nomeMes)) {
+        return `${currentYear}-${numMes}-01`;
+      }
+    }
+  }
+
+  // 4. Se a imagem era um print recortado sem data impressa, usa a data de criação/modificação do arquivo (file.lastModified)
+  if (file?.lastModified) {
+    const fileDate = new Date(file.lastModified);
+    if (!isNaN(fileDate.getTime())) {
+      const fy = fileDate.getFullYear();
+      const fm = String(fileDate.getMonth() + 1).padStart(2, '0');
+      const fd = String(fileDate.getDate()).padStart(2, '0');
+      const fileDateStr = `${fy}-${fm}-${fd}`;
+      if (fy >= 2020 && fy <= 2035) {
+        return fileDateStr;
+      }
+    }
+  }
+
+  return aiDateNormalized || today;
 };
 
 // Helpers para embutir/extrair garantia_meses com compatibilidade total no banco
@@ -250,8 +470,51 @@ export default function App() {
   const [batchProcessing, setBatchProcessing] = useState(false);
   const [batchCategoryOverride, setBatchCategoryOverride] = useState('AUTO');
   const [batchCartaoId, setBatchCartaoId] = useState('');
+  const [batchDateOverride, setBatchDateOverride] = useState('');
   const [batchSkipDuplicates, setBatchSkipDuplicates] = useState(true);
   const [activeGeminiModel, setActiveGeminiModel] = useState(MODELOS_GEMINI_POOL[0]);
+
+  // Tema Claro / Escuro (Dark / Light Mode)
+  const [darkMode, setDarkMode] = useState(() => {
+    try {
+      return localStorage.getItem('iaz_dark_mode') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('iaz_dark_mode', String(darkMode));
+      if (darkMode) {
+        document.documentElement.classList.add('dark-theme');
+        document.body.classList.add('dark-theme');
+      } else {
+        document.documentElement.classList.remove('dark-theme');
+        document.body.classList.remove('dark-theme');
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, [darkMode]);
+
+  // Estados de Importação via QR Code ou Chave de Acesso (44 dígitos)
+  const [qrChaveInput, setQrChaveInput] = useState('');
+  const [qrDiaCompra, setQrDiaCompra] = useState('01');
+  const [qrValorManual, setQrValorManual] = useState('');
+  const [qrTextoSefaz, setQrTextoSefaz] = useState('');
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrCameraActive, setQrCameraActive] = useState(false);
+  const qrVideoRef = React.useRef(null);
+  const qrStreamRef = React.useRef(null);
+
+  // Estados para Correção Rápida de Data em Lote no Histórico de Notas
+  const [selectedNotasIds, setSelectedNotasIds] = useState([]);
+  const [bulkNewDate, setBulkNewDate] = useState('');
+
+  // Filtro da aba Demais Itens (itens fora de Supermercado e Farmácia)
+  const [demaisCategoryFilter, setDemaisCategoryFilter] = useState('TODAS_DEMAIS');
+  const [demaisSearchQuery, setDemaisSearchQuery] = useState('');
   const [customGeminiKey, setCustomGeminiKey] = useState(() => {
     try {
       return localStorage.getItem('iaz_custom_gemini_key') || '';
@@ -944,11 +1207,19 @@ export default function App() {
     ],
   };
 
-  const extrairNotaViaGemini = async (base64Data, mimeType, textContent = '') => {
-    const promptInstrucao = `Analise esta Nota Fiscal / Cupom Fiscal brasileiro (NFC-e, NF-e, DANFE, XML ou SAT) e extraia todos os dados estruturados.
+  const extrairNotaViaGemini = async (
+    base64Data,
+    mimeType,
+    textContent = '',
+    fileHint = ''
+  ) => {
+    const promptInstrucao = `Analise esta Nota Fiscal / Cupom Fiscal brasileiro (NFC-e, NF-e, DANFE, XML, QR Code ou SAT) e extraia todos os dados estruturados.
 Classifique cada item e a categoria geral usando uma destas categorias: ${CATEGORIAS_DESPESA.join(', ')}.
 Dica importante: se for supermercado/atacarejo/hortifruti/padaria, use "Alimentação & Supermercado"; se for farmácia/drogaria/medicamentos/higiene, use "Saúde & Farmácia".
-Para data_emissao, retorne no formato YYYY-MM-DD.
+ATENÇÃO MÁXIMA COM A DATA DE EMISSÃO (data_emissao):
+- Procure atentamente a data da compra/emissão/autorização impressa na nota (ex: DD/MM/AAAA no cabeçalho, rodapé, protocolo de autorização ou nos dígitos 3 a 6 AAMM da chave de acesso de 44 dígitos) e retorne no formato YYYY-MM-DD.
+- Se a imagem for um print parcial onde a data da compra NÃO está visível no texto da imagem, retorne data_emissao como "" (vazio) — NUNCA invente a data de hoje!
+${fileHint ? `Informação auxiliar do arquivo: ${fileHint}` : ''}
 Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cartão de Débito, Dinheiro, Boleto ou Outros.
 Para cada item, preencha garantia_meses (número inteiro de meses de garantia): se for um produto eletrônico, eletrodoméstico, informática ou equipamento durável, informe o tempo de garantia escrito na nota ou 12 meses por padrão; se for alimento/supermercado/farmácia/consumível sem garantia durável, retorne 0.`;
 
@@ -985,23 +1256,30 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
     return JSON.parse(interaction.output_text || '{}');
   };
 
-  // Extrai até 8 notas fiscais em UMA ÚNICA requisição Gemini (economiza 8x a cota da API!)
+  // Extrai até 6 notas fiscais em UMA ÚNICA requisição Gemini (economiza 6x a cota da API!)
   const extrairMultiplasNotasEmUmaRequisicao = async (arquivosPreparados) => {
     if (arquivosPreparados.length === 1) {
       const unico = arquivosPreparados[0];
+      const fileDateIso = unico.queueItem?.file?.lastModified
+        ? new Date(unico.queueItem.file.lastModified).toISOString().split('T')[0]
+        : '';
       const nota = await extrairNotaViaGemini(
         unico.base64Data,
         unico.mimeType,
-        unico.textContent
+        unico.textContent,
+        `Arquivo: ${unico.fileName} (Data do arquivo: ${fileDateIso})`
       );
       return [{ arquivo_index: 0, ...nota }];
     }
 
     const inputParts = [];
     arquivosPreparados.forEach((arq, idx) => {
+      const fileDateIso = arq.queueItem?.file?.lastModified
+        ? new Date(arq.queueItem.file.lastModified).toISOString().split('T')[0]
+        : '';
       inputParts.push({
         type: 'text',
-        text: `\n=== INÍCIO DA NOTA FISCAL [arquivo_index = ${idx}] (${arq.fileName}) ===`,
+        text: `\n=== INÍCIO DA NOTA FISCAL [arquivo_index = ${idx}] (Nome: ${arq.fileName} | Data do arquivo: ${fileDateIso}) ===`,
       });
       if (arq.textContent) {
         inputParts.push({
@@ -1025,7 +1303,10 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
 Extraia os dados estruturados de CADA UMA das ${arquivosPreparados.length} notas fiscais separadamente, mantendo exatamente o arquivo_index correspondente.
 Classifique cada item e a categoria geral usando uma destas categorias: ${CATEGORIAS_DESPESA.join(', ')}.
 Dica: supermercado/atacarejo/padaria = "Alimentação & Supermercado"; farmácia/drogaria/medicamentos = "Saúde & Farmácia".
-Para data_emissao use YYYY-MM-DD. Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
+ATENÇÃO MÁXIMA COM A DATA DE EMISSÃO (data_emissao):
+- Extraia a data real da compra impressa em cada nota (convertendo DD/MM/AAAA para YYYY-MM-DD) ou dos dígitos 3 a 6 (AAMM) da chave de acesso.
+- Se uma imagem for um recorte onde a data de emissão NÃO aparece escrita no cupom, retorne data_emissao como "" (vazio) para aquela nota — NUNCA invente a data de hoje!
+Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
     });
 
     const interaction = await callGeminiWithFallback({
@@ -1063,7 +1344,7 @@ Para data_emissao use YYYY-MM-DD. Para garantia_meses use 0 para alimentos/farm�
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!GEMINI_API_KEY) {
+    if (!effectiveGeminiKey) {
       showNotice(
         'Configure VITE_GEMINI_API_KEY no arquivo .env para usar a leitura via IA.',
         'error'
@@ -1076,13 +1357,27 @@ Para data_emissao use YYYY-MM-DD. Para garantia_meses use 0 para alimentos/farm�
       const { base64Data, dataUrl, mimeType, textContent } = await fileToBase64(file);
       setPreviewImage(dataUrl);
 
-      const parsed = await extrairNotaViaGemini(base64Data, mimeType, textContent);
-      const today = new Date().toISOString().split('T')[0];
+      const fileDateIso = file.lastModified
+        ? new Date(file.lastModified).toISOString().split('T')[0]
+        : '';
+      const parsed = await extrairNotaViaGemini(
+        base64Data,
+        mimeType,
+        textContent,
+        `Arquivo: ${file.name} (Data do arquivo: ${fileDateIso})`
+      );
+
+      const dataReal = resolverDataEmissaoReal(
+        parsed.data_emissao,
+        parsed.chave_acesso,
+        file,
+        batchDateOverride
+      );
 
       setExtractedNota({
         estabelecimento: parsed.estabelecimento || 'Estabelecimento Não Identificado',
         cnpj: parsed.cnpj || '',
-        data_emissao: parsed.data_emissao || today,
+        data_emissao: dataReal,
         valor_total: Number(parsed.valor_total) || 0,
         desconto: Number(parsed.desconto) || 0,
         forma_pagamento: parsed.forma_pagamento || 'PIX',
@@ -1098,7 +1393,9 @@ Para data_emissao use YYYY-MM-DD. Para garantia_meses use 0 para alimentos/farm�
           : [],
       });
 
-      showNotice('Nota fiscal lida pela IA! Revise os dados e o tempo de garantia abaixo.');
+      showNotice(
+        `Nota lida pela IA! Data identificada: ${formatDateBR(dataReal)}. Revise abaixo.`
+      );
     } catch (err) {
       console.error('Erro na leitura OCR via Gemini:', err);
       showNotice(`Falha ao ler nota fiscal: ${err.message}`, 'error');
@@ -1400,11 +1697,18 @@ Para data_emissao use YYYY-MM-DD. Para garantia_meses use 0 para alimentos/farm�
           ? categoryOverride
           : parsed.categoria_geral || CATEGORIAS_DESPESA[0];
 
+      const dataRealNota = resolverDataEmissaoReal(
+        parsed.data_emissao,
+        parsed.chave_acesso,
+        queueItem.file,
+        batchDateOverride
+      );
+
       const notaObj = {
         estabelecimento:
           parsed.estabelecimento || 'Estabelecimento Não Identificado',
         cnpj: parsed.cnpj || '',
-        data_emissao: parsed.data_emissao || today,
+        data_emissao: dataRealNota,
         valor_total: Number(parsed.valor_total) || 0,
         desconto: Number(parsed.desconto) || 0,
         forma_pagamento: parsed.forma_pagamento || 'PIX',
@@ -1609,6 +1913,370 @@ Para data_emissao use YYYY-MM-DD. Para garantia_meses use 0 para alimentos/farm�
       batchCartaoId,
       batchSkipDuplicates
     );
+  };
+
+  // ==========================================
+  // ATUALIZAÇÃO RÁPIDA DE DATA (INDIVIDUAL E EM LOTE) PARA NOTAS JÁ IMPORTADAS
+  // ==========================================
+  const handleQuickUpdateNotaDate = async (nf, novaData) => {
+    if (!supabase || !novaData) return;
+    try {
+      const { error: e1 } = await supabase
+        .from('notas_fiscais')
+        .update({ data_emissao: novaData })
+        .eq('id', nf.id);
+      if (e1) throw e1;
+
+      if (nf.transacao_id) {
+        await supabase
+          .from('transacoes')
+          .update({ data_competencia: novaData, data_pagamento: novaData })
+          .eq('id', nf.transacao_id);
+      }
+      showNotice(`Data da nota "${nf.estabelecimento}" atualizada para ${formatDateBR(novaData)}!`);
+      fetchAllData();
+    } catch (err) {
+      showNotice(`Erro ao atualizar data: ${err.message}`, 'error');
+    }
+  };
+
+  const handleBulkUpdateNotasDate = async () => {
+    if (!supabase || selectedNotasIds.length === 0 || !bulkNewDate) {
+      return showNotice('Selecione ao menos 1 nota e informe a nova data.', 'error');
+    }
+    setLoading(true);
+    try {
+      const { error: e1 } = await supabase
+        .from('notas_fiscais')
+        .update({ data_emissao: bulkNewDate })
+        .in('id', selectedNotasIds);
+      if (e1) throw e1;
+
+      const transIds = notasFiscais
+        .filter((n) => selectedNotasIds.includes(n.id) && n.transacao_id)
+        .map((n) => n.transacao_id);
+
+      if (transIds.length > 0) {
+        await supabase
+          .from('transacoes')
+          .update({ data_competencia: bulkNewDate, data_pagamento: bulkNewDate })
+          .in('id', transIds);
+      }
+
+      showNotice(
+        `Data de ${selectedNotasIds.length} nota(s) alterada para ${formatDateBR(bulkNewDate)}!`
+      );
+      setSelectedNotasIds([]);
+      fetchAllData();
+    } catch (err) {
+      showNotice(`Erro ao alterar datas em lote: ${err.message}`, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ==========================================
+  // IMPORTAÇÃO DE NOTA FISCAL POR QR CODE OU CHAVE DE ACESSO (44 DÍGITOS)
+  // ==========================================
+  const infoQrDecodificada = useMemo(
+    () => decodificarChaveOuQrCode(qrChaveInput),
+    [qrChaveInput]
+  );
+
+  useEffect(() => {
+    if (infoQrDecodificada?.valida) {
+      const d = infoQrDecodificada.dataSugerida.split('-')[2] || '01';
+      setQrDiaCompra(d);
+      if (infoQrDecodificada.valorExtraido > 0 && !qrValorManual) {
+        setQrValorManual(String(infoQrDecodificada.valorExtraido));
+      }
+    }
+  }, [infoQrDecodificada?.chave44]);
+
+  const stopQrCamera = () => {
+    if (qrStreamRef.current) {
+      qrStreamRef.current.getTracks().forEach((t) => t.stop());
+      qrStreamRef.current = null;
+    }
+    setQrCameraActive(false);
+  };
+
+  const startQrCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+      });
+      qrStreamRef.current = stream;
+      setQrCameraActive(true);
+      setTimeout(() => {
+        if (qrVideoRef.current) {
+          qrVideoRef.current.srcObject = stream;
+          qrVideoRef.current.play().catch(() => {});
+        }
+      }, 150);
+
+      if ('BarcodeDetector' in window) {
+        const detector = new window.BarcodeDetector({
+          formats: ['qr_code', 'code_128', 'ean_13'],
+        });
+        const interval = setInterval(async () => {
+          if (!qrStreamRef.current || !qrVideoRef.current) {
+            clearInterval(interval);
+            return;
+          }
+          try {
+            const barcodes = await detector.detect(qrVideoRef.current);
+            if (barcodes && barcodes.length > 0) {
+              const rawValue = barcodes[0].rawValue;
+              if (rawValue) {
+                setQrChaveInput(rawValue);
+                clearInterval(interval);
+                stopQrCamera();
+                showNotice('QR Code / Código de Barras lido com sucesso!');
+              }
+            }
+          } catch {
+            // continua escaneando
+          }
+        }, 450);
+      } else {
+        showNotice(
+          'Aponte a câmera ou use o botão "Foto do QR Code" para leitura via IA.',
+          'success'
+        );
+      }
+    } catch (err) {
+      showNotice(`Não foi possível acessar a câmera: ${err.message}`, 'error');
+    }
+  };
+
+  const handleQrImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setQrLoading(true);
+    try {
+      // 1. Tenta BarcodeDetector nativo na imagem primeiro
+      if ('BarcodeDetector' in window) {
+        try {
+          const bitmap = await createImageBitmap(file);
+          const detector = new window.BarcodeDetector({
+            formats: ['qr_code', 'code_128'],
+          });
+          const codes = await detector.detect(bitmap);
+          if (codes && codes.length > 0 && codes[0].rawValue) {
+            setQrChaveInput(codes[0].rawValue);
+            showNotice('QR Code extraído da imagem com sucesso!');
+            setQrLoading(false);
+            e.target.value = '';
+            return;
+          }
+        } catch {
+          // Segue para leitura via Gemini IA
+        }
+      }
+
+      // 2. Usa Gemini IA para ler o QR Code / Chave de 44 dígitos e os dados da imagem
+      const { base64Data, dataUrl, mimeType } = await fileToBase64(file);
+      setPreviewImage(dataUrl);
+      const interaction = await callGeminiWithFallback({
+        input: [
+          {
+            type: 'image',
+            mime_type: mimeType,
+            data: base64Data,
+          },
+          {
+            type: 'text',
+            text: 'Extraia a Chave de Acesso de 44 dígitos (ou a URL do QR Code), o nome do estabelecimento, CNPJ, data de emissão (YYYY-MM-DD) e valor total desta imagem de Nota Fiscal / QR Code.',
+          },
+        ],
+        response_format: [
+          {
+            type: 'text',
+            mime_type: 'application/json',
+            schema: NOTA_JSON_SCHEMA,
+          },
+        ],
+      });
+      const parsed = JSON.parse(interaction.output_text || '{}');
+      if (parsed.chave_acesso) {
+        setQrChaveInput(parsed.chave_acesso);
+      }
+      const dataReal = resolverDataEmissaoReal(
+        parsed.data_emissao,
+        parsed.chave_acesso,
+        file
+      );
+      setExtractedNota({
+        estabelecimento: parsed.estabelecimento || 'Estabelecimento',
+        cnpj: parsed.cnpj || '',
+        data_emissao: dataReal,
+        valor_total: Number(parsed.valor_total) || 0,
+        desconto: Number(parsed.desconto) || 0,
+        forma_pagamento: parsed.forma_pagamento || 'PIX',
+        chave_acesso: parsed.chave_acesso || '',
+        categoria_geral: parsed.categoria_geral || CATEGORIAS_DESPESA[0],
+        cartao_id: '',
+        status_pagamento: 'CONFIRMADO',
+        itens: Array.isArray(parsed.itens) ? parsed.itens : [],
+      });
+      showNotice('Dados do QR Code / Chave lidos pela IA! Revise abaixo.');
+    } catch (err) {
+      showNotice(`Erro ao ler QR Code: ${err.message}`, 'error');
+    } finally {
+      setQrLoading(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleImportarPorChaveOuQrCode = async () => {
+    if (!qrChaveInput.trim()) {
+      return showNotice(
+        'Informe a Chave de Acesso de 44 dígitos ou escaneie o QR Code.',
+        'error'
+      );
+    }
+
+    setQrLoading(true);
+    try {
+      const info = decodificarChaveOuQrCode(qrChaveInput);
+      let nomeEstabelecimento = '';
+      let cnpjFormatado = info?.cnpjFormatado || '';
+      let categoriaDetectada = CATEGORIAS_DESPESA[0];
+
+      // 1. Consulta pública automática do CNPJ da chave de acesso na BrasilAPI
+      if (info?.cnpjRaw && info.cnpjRaw.length === 14) {
+        try {
+          const resp = await fetch(
+            `https://brasilapi.com.br/api/cnpj/v1/${info.cnpjRaw}`
+          );
+          if (resp.ok) {
+            const cnpjData = await resp.json();
+            nomeEstabelecimento =
+              cnpjData.nome_fantasia || cnpjData.razao_social || '';
+            const cnaeDesc = String(
+              cnpjData.cnae_fiscal_descricao || ''
+            ).toLowerCase();
+            if (
+              cnaeDesc.includes('farmac') ||
+              cnaeDesc.includes('drogaria') ||
+              cnaeDesc.includes('medicamento') ||
+              cnaeDesc.includes('perfumaria') ||
+              nomeEstabelecimento.toLowerCase().includes('farma') ||
+              nomeEstabelecimento.toLowerCase().includes('drog') ||
+              nomeEstabelecimento.toLowerCase().includes('pague menos')
+            ) {
+              categoriaDetectada = 'Saúde & Farmácia';
+            } else if (
+              cnaeDesc.includes('hipermercado') ||
+              cnaeDesc.includes('supermercado') ||
+              cnaeDesc.includes('minimercado') ||
+              cnaeDesc.includes('alimento') ||
+              cnaeDesc.includes('hortifrut') ||
+              cnaeDesc.includes('padaria')
+            ) {
+              categoriaDetectada = 'Alimentação & Supermercado';
+            }
+          }
+        } catch {
+          // continua mesmo sem internet/BrasilAPI
+        }
+      }
+
+      const diaEscolhido = String(Number(qrDiaCompra) || 1).padStart(2, '0');
+      const dataPelaChave = info?.valida
+        ? `${info.anoMes}-${diaEscolhido}`
+        : new Date().toISOString().split('T')[0];
+
+      // 2. Se o usuário também colou o texto/itens copiados da SEFAZ, usa a IA para extrair todos os itens
+      if (qrTextoSefaz.trim()) {
+        const parsed = await extrairNotaViaGemini(
+          '',
+          'text/plain',
+          qrTextoSefaz,
+          `Chave: ${info?.chave44 || qrChaveInput} | Data da Chave: ${dataPelaChave} | Loja pelo CNPJ: ${nomeEstabelecimento}`
+        );
+
+        const dataFinal = resolverDataEmissaoReal(
+          parsed.data_emissao,
+          info?.chave44 || parsed.chave_acesso,
+          null,
+          info?.valida ? dataPelaChave : ''
+        );
+
+        setExtractedNota({
+          estabelecimento:
+            nomeEstabelecimento ||
+            parsed.estabelecimento ||
+            `Nota Fiscal #${info?.numeroNota || ''}`,
+          cnpj: cnpjFormatado || parsed.cnpj || '',
+          data_emissao: dataFinal,
+          valor_total:
+            Number(qrValorManual) ||
+            Number(parsed.valor_total) ||
+            info?.valorExtraido ||
+            0,
+          desconto: Number(parsed.desconto) || 0,
+          forma_pagamento: parsed.forma_pagamento || 'PIX',
+          chave_acesso: info?.chave44 || parsed.chave_acesso || qrChaveInput.trim(),
+          categoria_geral:
+            parsed.categoria_geral && parsed.categoria_geral !== 'Outros'
+              ? parsed.categoria_geral
+              : categoriaDetectada,
+          cartao_id: '',
+          status_pagamento: 'CONFIRMADO',
+          itens: Array.isArray(parsed.itens) ? parsed.itens : [],
+        });
+        showNotice(
+          `Nota e ${
+            (parsed.itens || []).length
+          } item(ns) extraídos com a data preservada (${formatDateBR(dataFinal)})!`
+        );
+      } else {
+        // Preenche com todos os dados extraídos da Chave de 44 dígitos + CNPJ BrasilAPI
+        const valorTotalFinal =
+          Number(qrValorManual) || Number(info?.valorExtraido) || 0;
+        setExtractedNota({
+          estabelecimento:
+            nomeEstabelecimento ||
+            `Estabelecimento (${info?.uf || 'NF'} #${info?.numeroNota || ''})`,
+          cnpj: cnpjFormatado,
+          data_emissao: dataPelaChave,
+          valor_total: valorTotalFinal,
+          desconto: 0,
+          forma_pagamento: 'PIX',
+          chave_acesso: info?.chave44 || qrChaveInput.trim(),
+          categoria_geral: categoriaDetectada,
+          cartao_id: '',
+          status_pagamento: 'CONFIRMADO',
+          itens:
+            valorTotalFinal > 0
+              ? [
+                  {
+                    descricao_item: `Compra em ${
+                      nomeEstabelecimento || 'Estabelecimento'
+                    } (NF #${info?.numeroNota || ''})`,
+                    quantidade: 1,
+                    unidade: 'UN',
+                    valor_unitario: valorTotalFinal,
+                    valor_total: valorTotalFinal,
+                    categoria_item: categoriaDetectada,
+                    garantia_meses: 0,
+                  },
+                ]
+              : [],
+        });
+        showNotice(
+          `Chave decodificada! Loja: ${
+            nomeEstabelecimento || cnpjFormatado
+          } • Data preservada: ${formatDateBR(dataPelaChave)}. Revise abaixo!`
+        );
+      }
+    } catch (err) {
+      showNotice(`Erro ao processar chave/QR Code: ${err.message}`, 'error');
+    } finally {
+      setQrLoading(false);
+    }
   };
 
   const batchSummary = useMemo(() => {
@@ -2151,22 +2819,58 @@ ${JSON.stringify(itensDaNota)}`,
   };
 
   // ==========================================
-  // NAVEGAÇÃO (COM SUPERMERCADO E FARMÁCIA)
+  // NAVEGAÇÃO NA ORDEM SOLICITADA:
+  // Resumo, Notas, Supermercado, Farmácia, Demais Itens e Busca (Sem Cartões)
   // ==========================================
   const navItems = [
-    { id: 'resumo', label: 'Resumo do Mês', icon: PieChart },
-    { id: 'notas', label: 'Notas IA', icon: Receipt },
-    { id: 'busca', label: 'Buscar Itens', icon: Search },
+    { id: 'resumo', label: 'Resumo', icon: PieChart },
+    { id: 'notas', label: 'Notas', icon: Receipt },
     { id: 'lista', label: 'Supermercado', icon: ShoppingCart },
     { id: 'farmacia', label: 'Farmácia', icon: HeartPulse },
-    { id: 'pagamentos', label: 'Pagamentos', icon: ArrowDownCircle },
-    { id: 'cartoes', label: 'Cartões', icon: CreditCard },
+    { id: 'demais', label: 'Demais Itens', icon: Package },
+    { id: 'busca', label: 'Busca', icon: Search },
   ];
 
-  const getCartaoNome = (id) => cartoes.find((c) => c.id === id)?.nome_cartao || null;
+  // Itens para a aba "Demais Itens" (tudo que não é Supermercado nem Farmácia, ou filtrado)
+  const itensDemaisCategorias = useMemo(() => {
+    const q = demaisSearchQuery.trim().toLowerCase();
+    return itensEnriquecidos.filter((it) => {
+      const cat = it.categoria_item || 'Outros';
+      if (demaisCategoryFilter === 'TODAS_DEMAIS') {
+        if (
+          cat === 'Alimentação & Supermercado' ||
+          cat === 'Saúde & Farmácia'
+        ) {
+          return false;
+        }
+      } else if (demaisCategoryFilter !== 'TODAS_GERAL') {
+        if (cat !== demaisCategoryFilter) return false;
+      }
+
+      if (!q) return true;
+      return (
+        String(it.descricao_item || '').toLowerCase().includes(q) ||
+        String(it.estabelecimento || '').toLowerCase().includes(q) ||
+        String(cat).toLowerCase().includes(q)
+      );
+    });
+  }, [itensEnriquecidos, demaisCategoryFilter, demaisSearchQuery]);
+
+  const totalDemaisItens = useMemo(
+    () =>
+      itensDemaisCategorias.reduce(
+        (acc, it) => acc + (Number(it.valor_total) || 0),
+        0
+      ),
+    [itensDemaisCategorias]
+  );
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row pb-20 md:pb-0">
+    <div
+      className={`min-h-screen bg-slate-50 flex flex-col md:flex-row pb-24 md:pb-0 transition-colors ${
+        darkMode ? 'dark-theme' : ''
+      }`}
+    >
       {/* TOAST DE NOTIFICAÇÃO */}
       {toast && (
         <div
@@ -2220,7 +2924,25 @@ ${JSON.stringify(itensDaNota)}`,
           })}
         </nav>
 
-        <div className="p-4 border-t border-slate-800 space-y-3">
+        <div className="p-4 border-t border-slate-800 space-y-2.5">
+          <button
+            type="button"
+            onClick={() => setDarkMode((prev) => !prev)}
+            className="w-full inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold cursor-pointer transition"
+          >
+            {darkMode ? (
+              <>
+                <Sun className="w-4 h-4 text-amber-400" />
+                <span>Tema Claro</span>
+              </>
+            ) : (
+              <>
+                <Moon className="w-4 h-4 text-indigo-400" />
+                <span>Tema Escuro</span>
+              </>
+            )}
+          </button>
+
           <a
             href={APK_DOWNLOAD_URL}
             target="_blank"
@@ -2247,7 +2969,7 @@ ${JSON.stringify(itensDaNota)}`,
       {/* CONTEÚDO PRINCIPAL */}
       <main className="flex-1 md:pl-64">
         <div className="max-w-6xl mx-auto p-4 md:p-8 space-y-6">
-          {/* BARRA SUPERIOR MOBILE COM ÍCONE E NOME DO APP + BOTÃO APK */}
+          {/* BARRA SUPERIOR MOBILE COM ÍCONE, TEMA E BOTÃO APK */}
           <div className="flex md:hidden items-center justify-between bg-slate-900 text-white p-3.5 rounded-2xl shadow-sm">
             <div className="flex items-center gap-2.5">
               <img
@@ -2260,15 +2982,29 @@ ${JSON.stringify(itensDaNota)}`,
                 <p className="text-[11px] text-slate-400">Mercado, Farmácia &amp; Notas IA</p>
               </div>
             </div>
-            <a
-              href={APK_DOWNLOAD_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500 text-slate-950 text-xs font-bold"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>APK</span>
-            </a>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setDarkMode((prev) => !prev)}
+                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer"
+                title={darkMode ? 'Mudar para Tema Claro' : 'Mudar para Tema Escuro'}
+              >
+                {darkMode ? (
+                  <Sun className="w-4 h-4 text-amber-400" />
+                ) : (
+                  <Moon className="w-4 h-4 text-indigo-300" />
+                )}
+              </button>
+              <a
+                href={APK_DOWNLOAD_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500 text-slate-950 text-xs font-bold"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>APK</span>
+              </a>
+            </div>
           </div>
 
           {/* CABEÇALHO SIMPLES DA TELA ATUAL */}
@@ -2282,6 +3018,23 @@ ${JSON.stringify(itensDaNota)}`,
               </p>
             </div>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setDarkMode((prev) => !prev)}
+                className="hidden md:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 text-xs font-semibold cursor-pointer shadow-2xs"
+              >
+                {darkMode ? (
+                  <>
+                    <Sun className="w-4 h-4 text-amber-400" />
+                    <span>Tema Claro</span>
+                  </>
+                ) : (
+                  <>
+                    <Moon className="w-4 h-4 text-indigo-500" />
+                    <span>Tema Escuro</span>
+                  </>
+                )}
+              </button>
               <a
                 href={APK_DOWNLOAD_URL}
                 target="_blank"
@@ -2543,6 +3296,189 @@ ${JSON.stringify(itensDaNota)}`,
                 </div>
 
                 {/* ==========================================
+                    SEÇÃO DE IMPORTAÇÃO POR QR CODE OU CHAVE DE ACESSO (44 DÍGITOS)
+                ========================================== */}
+                <div className="mt-6 pt-6 border-t border-slate-200 space-y-4">
+                  <div className="bg-emerald-50/50 border border-emerald-200 rounded-2xl p-5 space-y-4">
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                      <div>
+                        <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full mb-1.5">
+                          <QrCode className="w-3.5 h-3.5" />
+                          <span>Leitor de QR Code & Decodificador de Chave de Acesso (44 dígitos)</span>
+                        </div>
+                        <h4 className="text-base font-bold text-slate-900">
+                          Importar Nota Fiscal via QR Code ou Chave de Acesso SEFAZ
+                        </h4>
+                        <p className="text-xs text-slate-600 mt-0.5">
+                          Escaneie o QR Code da nota ou digite/cole os 44 dígitos da Chave de Acesso. O sistema extrai automaticamente o <strong>Ano e Mês real da compra</strong> (dígitos 3 a 6 da chave), o <strong>CNPJ</strong> e consulta a loja na Receita Federal!
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        {!qrCameraActive ? (
+                          <button
+                            type="button"
+                            onClick={startQrCamera}
+                            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs shadow-xs cursor-pointer transition"
+                          >
+                            <QrCode className="w-4 h-4" />
+                            <span>Ler QR Code (Câmera)</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={stopQrCamera}
+                            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs shadow-xs cursor-pointer transition"
+                          >
+                            <X className="w-4 h-4" />
+                            <span>Fechar Câmera QR</span>
+                          </button>
+                        )}
+
+                        <label className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-800 font-semibold text-xs cursor-pointer transition">
+                          <Upload className="w-4 h-4" />
+                          <span>Ler QR de Imagem</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleQrImageUpload}
+                            className="hidden"
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    {qrCameraActive && (
+                      <div className="bg-slate-900 rounded-xl p-3 flex flex-col items-center justify-center">
+                        <div id="qr-reader-container" className="w-full max-w-sm rounded-lg overflow-hidden" />
+                        <p className="text-xs text-slate-300 mt-2">
+                          Aponte a câmera para o QR Code impresso no cupom fiscal...
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                      <div className="md:col-span-6">
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Chave de Acesso (44 dígitos) ou Link/URL do QR Code SEFAZ
+                        </label>
+                        <div className="relative">
+                          <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            placeholder="Cole os 44 números da chave ou URL do QR Code..."
+                            value={qrChaveInput}
+                            onChange={(e) => setQrChaveInput(e.target.value)}
+                            className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs bg-white font-mono text-slate-800"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="md:col-span-3">
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Dia da Compra (se não vier no QR)
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="31"
+                          placeholder="Ex: 15"
+                          value={qrDiaCompra}
+                          onChange={(e) => setQrDiaCompra(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white text-slate-800"
+                        />
+                      </div>
+
+                      <div className="md:col-span-3">
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Valor Total R$ (Opcional)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="0,00"
+                          value={qrValorManual}
+                          onChange={(e) => setQrValorManual(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white text-slate-800"
+                        />
+                      </div>
+                    </div>
+
+                    {/* PREVIEW AUTOMÁTICO DA CHAVE DECODIFICADA */}
+                    {qrDecodedPreview && (
+                      <div className="bg-white rounded-xl border border-emerald-200 p-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 font-bold">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> Chave 44 dígitos identificada!
+                          </span>
+                          {qrDecodedPreview.uf && (
+                            <span className="px-2 py-1 rounded bg-slate-100 text-slate-700 font-semibold">
+                              UF: {qrDecodedPreview.uf}
+                            </span>
+                          )}
+                          {qrDecodedPreview.anoMes && (
+                            <span className="px-2 py-1 rounded bg-indigo-50 text-indigo-700 font-bold">
+                              📅 Emissão na Chave: {qrDecodedPreview.anoMes.split('-')[1]}/{qrDecodedPreview.anoMes.split('-')[0]}
+                            </span>
+                          )}
+                          {qrDecodedPreview.cnpjFormatado && (
+                            <span className="px-2 py-1 rounded bg-slate-100 text-slate-700 font-mono">
+                              CNPJ: {qrDecodedPreview.cnpjFormatado}
+                            </span>
+                          )}
+                        </div>
+
+                        {qrDecodedPreview.urlPortalSefaz && (
+                          <a
+                            href={qrDecodedPreview.urlPortalSefaz}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-emerald-700 hover:underline font-semibold"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            <span>Abrir Portal SEFAZ ({qrDecodedPreview.uf || 'NFC-e'})</span>
+                          </a>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-end justify-between gap-3">
+                      <div className="flex-1">
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                          Texto Copiado da Consulta SEFAZ (Opcional — cole aqui os itens da página da SEFAZ para extrair tudo sem foto)
+                        </label>
+                        <textarea
+                          rows={2}
+                          placeholder="Dica: se abrir a nota no site da SEFAZ, você pode copiar o texto da tela e colar aqui para a IA extrair todos os itens e a data exata!"
+                          value={qrTextoSefaz}
+                          onChange={(e) => setQrTextoSefaz(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white text-slate-800"
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleImportarPorChaveOuQrCode}
+                        disabled={qrLoading || (!qrChaveInput.trim() && !qrTextoSefaz.trim())}
+                        className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-semibold text-xs shadow-xs cursor-pointer transition shrink-0"
+                      >
+                        {qrLoading ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>Consultando Chave...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-4 h-4 text-emerald-400" />
+                            <span>Carregar Dados da Chave / QR Code</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ==========================================
                     SEÇÃO DE IMPORTAÇÃO DE NOTAS FISCAIS EM LOTE (50+ ARQUIVOS)
                 ========================================== */}
                 <div className="mt-6 pt-6 border-t border-slate-200 space-y-4">
@@ -2560,7 +3496,7 @@ ${JSON.stringify(itensDaNota)}`,
                           Importar Múltiplas Notas Fiscais de Uma Vez (Ex: 50+ Notas)
                         </h4>
                         <p className="text-xs text-slate-600 mt-0.5">
-                          Agrupa até 6 notas numa única chamada da IA e alterna automaticamente entre 6 modelos Gemini caso algum atinja o limite diário gratuito de 20 requisições.
+                          Preserva automaticamente a data real da compra (lendo o texto da nota, o Ano/Mês da Chave de 44 dígitos ou a data do arquivo) e alterna entre 6 modelos Gemini.
                         </p>
                       </div>
 
@@ -2630,21 +3566,15 @@ ${JSON.stringify(itensDaNota)}`,
 
                       <div>
                         <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                          Cartão Vinculado ao Lote (Opcional)
+                          Data Fixa p/ Lote (Opcional - caso print não mostre data)
                         </label>
-                        <select
-                          value={batchCartaoId}
-                          onChange={(e) => setBatchCartaoId(e.target.value)}
+                        <input
+                          type="date"
+                          value={batchDateOverride}
+                          onChange={(e) => setBatchDateOverride(e.target.value)}
                           disabled={batchProcessing}
                           className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white font-medium text-slate-800"
-                        >
-                          <option value="">Sem Cartão Específico</option>
-                          {cartoes.map((cr) => (
-                            <option key={cr.id} value={cr.id}>
-                              {cr.nome_cartao}
-                            </option>
-                          ))}
-                        </select>
+                        />
                       </div>
 
                       <div className="flex items-end">
@@ -2983,25 +3913,20 @@ ${JSON.stringify(itensDaNota)}`,
 
                         <div>
                           <label className="block text-xs font-medium text-slate-600 mb-1">
-                            Cartão Vinculado (Opcional)
+                            Chave de Acesso (44 dígitos - Opcional)
                           </label>
-                          <select
-                            value={extractedNota.cartao_id}
+                          <input
+                            type="text"
+                            placeholder="44 números da nota..."
+                            value={extractedNota.chave_acesso || ''}
                             onChange={(e) =>
                               setExtractedNota({
                                 ...extractedNota,
-                                cartao_id: e.target.value,
+                                chave_acesso: e.target.value,
                               })
                             }
-                            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
-                          >
-                            <option value="">Sem Cartão</option>
-                            {cartoes.map((cr) => (
-                              <option key={cr.id} value={cr.id}>
-                                {cr.nome_cartao}
-                              </option>
-                            ))}
-                          </select>
+                            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm font-mono"
+                          />
                         </div>
                       </div>
                     </div>
@@ -3222,10 +4147,55 @@ ${JSON.stringify(itensDaNota)}`,
               )}
 
               <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
-                <div className="p-5 border-b border-slate-100">
-                  <h3 className="font-semibold text-slate-900">
-                    Histórico de Notas e Cupons Fiscais ({notasFiscais.length})
-                  </h3>
+                <div className="p-5 border-b border-slate-100 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold text-slate-900">
+                      Histórico de Notas e Cupons Fiscais ({notasFiscais.length})
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Você pode alterar a data de compra diretamente em cada nota ou selecionar várias notas abaixo para ajustar o mês/data em lote.
+                    </p>
+                  </div>
+
+                  {/* BARRA DE AJUSTE RÁPIDO DE DATA EM LOTE */}
+                  <div className="flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (selectedNotaIds.length === notasFiscais.length) {
+                          setSelectedNotaIds([]);
+                        } else {
+                          setSelectedNotaIds(notasFiscais.map((n) => n.id));
+                        }
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-100 cursor-pointer"
+                    >
+                      {selectedNotaIds.length === notasFiscais.length && notasFiscais.length > 0
+                        ? 'Desmarcar Todas'
+                        : `Selecionar Todas (${selectedNotaIds.length})`}
+                    </button>
+
+                    <input
+                      type="date"
+                      value={bulkNewDate}
+                      onChange={(e) => setBulkNewDate(e.target.value)}
+                      className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-800"
+                    />
+
+                    <button
+                      type="button"
+                      disabled={bulkDateSaving || selectedNotaIds.length === 0 || !bulkNewDate}
+                      onClick={handleBulkUpdateNotasDate}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-xs font-semibold cursor-pointer transition"
+                    >
+                      {bulkDateSaving ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Calendar className="w-3.5 h-3.5" />
+                      )}
+                      <span>Aplicar Data ({selectedNotaIds.length})</span>
+                    </button>
+                  </div>
                 </div>
 
                 {notasFiscais.length === 0 ? (
@@ -3237,11 +4207,27 @@ ${JSON.stringify(itensDaNota)}`,
                     {notasFiscais.map((nf) => {
                       const itensDaNota = itensNota.filter((i) => i.nota_id === nf.id);
                       const isExpanded = expandedNotaId === nf.id;
+                      const isSelected = selectedNotaIds.includes(nf.id);
 
                       return (
                         <div key={nf.id} className="p-4 sm:px-6">
                           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                             <div className="flex items-start gap-3">
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedNotaIds((prev) => [...prev, nf.id]);
+                                  } else {
+                                    setSelectedNotaIds((prev) =>
+                                      prev.filter((id) => id !== nf.id)
+                                    );
+                                  }
+                                }}
+                                className="mt-3 w-4 h-4 rounded text-indigo-600 cursor-pointer shrink-0"
+                                title="Selecionar nota para alterar data em lote"
+                              />
                               <div className="p-2.5 rounded-xl bg-slate-100 text-slate-700 mt-0.5">
                                 <ShoppingBag className="w-5 h-5" />
                               </div>
@@ -3251,7 +4237,18 @@ ${JSON.stringify(itensDaNota)}`,
                                 </p>
                                 <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-slate-500">
                                   {nf.cnpj && <span>CNPJ: {nf.cnpj}</span>}
-                                  <span>• Emissão: {formatDateBR(nf.data_emissao)}</span>
+                                  <span className="inline-flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded-md font-medium text-slate-700">
+                                    📅 Data:
+                                    <input
+                                      type="date"
+                                      value={nf.data_emissao || ''}
+                                      onChange={(e) =>
+                                        handleQuickUpdateNotaDate(nf, e.target.value)
+                                      }
+                                      className="bg-transparent font-semibold text-xs text-emerald-700 focus:outline-none cursor-pointer"
+                                      title="Clique para alterar a data desta nota imediatamente"
+                                    />
+                                  </span>
                                   <span>• {nf.forma_pagamento || 'PIX'}</span>
                                   <span>• {itensDaNota.length} item(ns)</span>
                                 </div>
@@ -4325,22 +5322,179 @@ ${JSON.stringify(itensDaNota)}`,
           )}
 
           {/* ==========================================
-              ABA 6: PAGAMENTOS DO MÊS
+              ABA 5: DEMAIS ITENS (ELETRÔNICOS, CASA, DESPESAS & GARANTIAS)
           ========================================== */}
-          {activeTab === 'pagamentos' && (
-            <section className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
-              <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                <div className="flex items-center gap-3">
+          {activeTab === 'demais' && (
+            <div className="space-y-6">
+              {/* CABEÇALHO E FILTROS DE DEMAIS ITENS */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div>
-                    <h3 className="font-semibold text-slate-900">Pagamentos do Mês</h3>
+                    <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-full mb-1.5">
+                      <Package className="w-3.5 h-3.5" />
+                      <span>Fora de Supermercado & Farmácia</span>
+                    </div>
+                    <h3 className="text-lg font-bold text-slate-900">
+                      Demais Itens Comprados & Despesas Gerais
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Eletrônicos, eletrodomésticos, casa, vestuário, serviços e lançamentos avulsos fora de Supermercado e Farmácia.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      onClick={openNewTransacaoModal}
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 shadow-xs cursor-pointer transition"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Novo Lançamento Avulso</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* FILTRO POR CATEGORIA */}
+                <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+                  <Filter className="w-4 h-4 text-slate-400 mr-1" />
+                  <button
+                    type="button"
+                    onClick={() => setDemaisCategoriaFiltro('TODAS')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer transition ${
+                      demaisCategoriaFiltro === 'TODAS'
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    Todas as Categorias
+                  </button>
+                  {CATEGORIAS_DESPESA.filter(
+                    (c) => c !== 'Alimentação & Supermercado' && c !== 'Saúde & Farmácia'
+                  ).map((cat) => (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => setDemaisCategoriaFiltro(cat)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-medium cursor-pointer transition ${
+                        demaisCategoriaFiltro === cat
+                          ? 'bg-emerald-600 text-white font-semibold'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* ITENS DE NOTAS FISCAIS FORA DE SUPERMERCADO E FARMÁCIA */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+                <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+                  <div>
+                    <h3 className="font-semibold text-slate-900">
+                      Itens de Notas Fiscais (Eletrônicos, Casa, Lazer, etc.)
+                    </h3>
                     <p className="text-xs text-slate-500">
-                      Total no mês:{' '}
-                      <strong>{formatCurrency(resumoMensal.totalPagamentosMes)}</strong>
+                      Itens extraídos das suas notas que não pertencem a Supermercado ou Farmácia
                     </p>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                {(() => {
+                  const demaisItensLista = itensEnriquecidos.filter((i) => {
+                    const isSup =
+                      i.categoria_item === 'Alimentação & Supermercado' ||
+                      i.categoria_nota === 'Alimentação & Supermercado';
+                    const isFarma =
+                      i.categoria_item === 'Saúde & Farmácia' ||
+                      i.categoria_nota === 'Saúde & Farmácia';
+                    if (isSup || isFarma) return false;
+                    if (
+                      demaisCategoriaFiltro !== 'TODAS' &&
+                      i.categoria_item !== demaisCategoriaFiltro
+                    ) {
+                      return false;
+                    }
+                    return true;
+                  });
+
+                  if (demaisItensLista.length === 0) {
+                    return (
+                      <div className="p-10 text-center text-slate-400 text-sm">
+                        Nenhum item encontrado nesta categoria fora de Supermercado e Farmácia.
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="divide-y divide-slate-100">
+                      {demaisItensLista.map((item) => {
+                        const g = item.garantiaInfo;
+                        return (
+                          <div
+                            key={item.id}
+                            className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/70 transition"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-bold text-slate-900 text-sm">
+                                  {item.descricao_item}
+                                </span>
+                                <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md text-[11px] font-medium">
+                                  {item.categoria_item}
+                                </span>
+                                {g && (
+                                  <span
+                                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] border ${
+                                      g.expirada
+                                        ? 'bg-rose-50 border-rose-200 text-rose-600 font-bold'
+                                        : 'bg-emerald-50 border-emerald-200 text-emerald-700 font-semibold'
+                                    }`}
+                                  >
+                                    {g.expirada ? (
+                                      <ShieldAlert className="w-3.5 h-3.5" />
+                                    ) : (
+                                      <ShieldCheck className="w-3.5 h-3.5" />
+                                    )}
+                                    <span>
+                                      {g.texto} ({g.detalhe})
+                                    </span>
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-500">
+                                Loja: <strong>{item.estabelecimento}</strong> • Compra em:{' '}
+                                <strong>{formatDateBR(item.data_compra)}</strong> • Qtd:{' '}
+                                {item.quantidade} {item.unidade || 'UN'} (Unit:{' '}
+                                {formatCurrency(item.valor_unitario)})
+                              </p>
+                            </div>
+
+                            <div className="text-left sm:text-right shrink-0">
+                              <p className="font-bold text-slate-900 text-sm">
+                                {formatCurrency(item.valor_total)}
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* DESPESAS E LANÇAMENTOS DO MÊS SELECIONADO */}
+              <section className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+                <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold text-slate-900">
+                      Lançamentos e Despesas do Mês ({selectedMonth})
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Total geral no mês:{' '}
+                      <strong>{formatCurrency(resumoMensal.totalPagamentosMes)}</strong>
+                    </p>
+                  </div>
+
                   <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
                     <Calendar className="w-4 h-4 text-slate-500" />
                     <input
@@ -4350,324 +5504,95 @@ ${JSON.stringify(itensDaNota)}`,
                       className="text-xs font-semibold text-slate-800 focus:outline-none bg-transparent"
                     />
                   </div>
-
-                  <button
-                    onClick={openNewTransacaoModal}
-                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 shadow-xs cursor-pointer transition"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Novo Pagamento</span>
-                  </button>
                 </div>
-              </div>
 
-              <div className="divide-y divide-slate-100">
-                {pagamentosDoMes.length === 0 ? (
-                  <div className="p-10 text-center text-slate-400 text-sm">
-                    Nenhum pagamento encontrado para {selectedMonth}.
-                  </div>
-                ) : (
-                  pagamentosDoMes.map((t) => {
-                    const isConcluido =
-                      t.status === 'CONFIRMADO' ||
-                      t.status === 'PAGO' ||
-                      t.status === 'RECEBIDO';
-                    const cartaoNome = getCartaoNome(t.cartao_id);
+                <div className="divide-y divide-slate-100">
+                  {pagamentosDoMes
+                    .filter((t) =>
+                      demaisCategoriaFiltro === 'TODAS'
+                        ? true
+                        : t.categoria === demaisCategoriaFiltro
+                    )
+                    .map((t) => {
+                      const isConcluido =
+                        t.status === 'CONFIRMADO' ||
+                        t.status === 'PAGO' ||
+                        t.status === 'RECEBIDO';
 
-                    return (
-                      <div
-                        key={t.id}
-                        className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/80 transition"
-                      >
-                        <div className="flex items-start gap-3">
-                          <button
-                            onClick={() => handleToggleStatusTransacao(t)}
-                            title="Alternar status"
-                            className={`mt-0.5 p-2 rounded-xl border cursor-pointer transition ${
-                              isConcluido
-                                ? 'bg-emerald-50 border-emerald-200 text-emerald-600'
-                                : 'bg-amber-50 border-amber-200 text-amber-600'
-                            }`}
-                          >
-                            {isConcluido ? (
-                              <CheckCircle2 className="w-4 h-4" />
-                            ) : (
-                              <Clock className="w-4 h-4" />
-                            )}
-                          </button>
+                      return (
+                        <div
+                          key={t.id}
+                          className="p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/80 transition"
+                        >
+                          <div className="flex items-start gap-3">
+                            <button
+                              onClick={() => handleToggleStatusTransacao(t)}
+                              title="Alternar status"
+                              className={`mt-0.5 p-2 rounded-xl border cursor-pointer transition ${
+                                isConcluido
+                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-600'
+                                  : 'bg-amber-50 border-amber-200 text-amber-600'
+                              }`}
+                            >
+                              {isConcluido ? (
+                                <CheckCircle2 className="w-4 h-4" />
+                              ) : (
+                                <Clock className="w-4 h-4" />
+                              )}
+                            </button>
 
-                          <div>
-                            <p className="font-semibold text-slate-900 text-sm">
-                              {t.descricao}
-                            </p>
-                            <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-slate-500">
-                              <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-medium">
-                                {t.categoria}
+                            <div>
+                              <p className="font-semibold text-slate-900 text-sm">
+                                {t.descricao}
+                              </p>
+                              <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-slate-500">
+                                <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md font-medium">
+                                  {t.categoria}
+                                </span>
+                                <span>• {t.forma_pagamento || 'PIX'}</span>
+                                <span>• Data: {formatDateBR(t.data_competencia)}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between sm:justify-end gap-4 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                            <div className="text-left sm:text-right">
+                              <p className="font-bold text-sm text-rose-600">
+                                - {formatCurrency(t.valor)}
+                              </p>
+                              <span
+                                className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                                  isConcluido
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : 'bg-amber-100 text-amber-800'
+                                }`}
+                              >
+                                {t.status}
                               </span>
-                              <span>• {t.forma_pagamento || 'PIX'}</span>
-                              <span>• Comp: {formatDateBR(t.data_competencia)}</span>
-                              {cartaoNome && <span>• Cartão: {cartaoNome}</span>}
+                            </div>
+
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => openEditTransacaoModal(t)}
+                                className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
+                                title="Editar"
+                              >
+                                <Edit3 className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteTransacao(t.id)}
+                                className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                                title="Excluir"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
                             </div>
                           </div>
                         </div>
-
-                        <div className="flex items-center justify-between sm:justify-end gap-4 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
-                          <div className="text-left sm:text-right">
-                            <p className="font-bold text-sm text-rose-600">
-                              - {formatCurrency(t.valor)}
-                            </p>
-                            <span
-                              className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-                                isConcluido
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : 'bg-amber-100 text-amber-800'
-                              }`}
-                            >
-                              {t.status}
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => openEditTransacaoModal(t)}
-                              className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
-                              title="Editar"
-                            >
-                              <Edit3 className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteTransacao(t.id)}
-                              className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
-                              title="Excluir"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </section>
-          )}
-
-          {/* ==========================================
-              ABA 7: CARTÕES (cartoes)
-          ========================================== */}
-          {activeTab === 'cartoes' && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <form
-                onSubmit={handleSaveCartao}
-                className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4 self-start"
-              >
-                <h3 className="font-bold text-slate-900 flex items-center gap-2">
-                  <CreditCard className="w-5 h-5 text-emerald-600" />
-                  <span>{cartaoForm.id ? 'Editar Cartão' : 'Novo Cartão'}</span>
-                </h3>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Nome do Cartão
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ex: Nubank Ultravioleta, Itaú Black..."
-                    value={cartaoForm.nome_cartao}
-                    onChange={(e) =>
-                      setCartaoForm({ ...cartaoForm, nome_cartao: e.target.value })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm"
-                  />
+                      );
+                    })}
                 </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      Bandeira
-                    </label>
-                    <select
-                      value={cartaoForm.bandeira}
-                      onChange={(e) =>
-                        setCartaoForm({ ...cartaoForm, bandeira: e.target.value })
-                      }
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
-                    >
-                      <option value="Mastercard">Mastercard</option>
-                      <option value="Visa">Visa</option>
-                      <option value="Elo">Elo</option>
-                      <option value="Amex">Amex</option>
-                      <option value="Hipercard">Hipercard</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      Modalidade
-                    </label>
-                    <select
-                      value={cartaoForm.tipo}
-                      onChange={(e) =>
-                        setCartaoForm({ ...cartaoForm, tipo: e.target.value })
-                      }
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
-                    >
-                      <option value="CREDITO">Crédito</option>
-                      <option value="DEBITO">Débito</option>
-                      <option value="MULTIPLO">Múltiplo</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Limite Total (R$)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    placeholder="0.00"
-                    value={cartaoForm.limite}
-                    onChange={(e) =>
-                      setCartaoForm({ ...cartaoForm, limite: e.target.value })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      Dia Fechamento
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="31"
-                      value={cartaoForm.dia_fechamento}
-                      onChange={(e) =>
-                        setCartaoForm({
-                          ...cartaoForm,
-                          dia_fechamento: e.target.value,
-                        })
-                      }
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      Dia Vencimento
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="31"
-                      value={cartaoForm.dia_vencimento}
-                      onChange={(e) =>
-                        setCartaoForm({
-                          ...cartaoForm,
-                          dia_vencimento: e.target.value,
-                        })
-                      }
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex gap-2 pt-2">
-                  <button
-                    type="submit"
-                    className="flex-1 py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer"
-                  >
-                    {cartaoForm.id ? 'Salvar Alterações' : 'Cadastrar Cartão'}
-                  </button>
-                  {cartaoForm.id && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setCartaoForm({
-                          id: null,
-                          nome_cartao: '',
-                          bandeira: 'Mastercard',
-                          tipo: 'CREDITO',
-                          limite: '',
-                          dia_fechamento: 1,
-                          dia_vencimento: 10,
-                          ativo: true,
-                        })
-                      }
-                      className="py-2.5 px-3 rounded-xl border border-slate-200 text-slate-600 text-sm cursor-pointer"
-                    >
-                      Cancelar
-                    </button>
-                  )}
-                </div>
-              </form>
-
-              <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
-                <div className="p-5 border-b border-slate-100">
-                  <h3 className="font-semibold text-slate-900">
-                    Cartões Cadastrados ({cartoes.length})
-                  </h3>
-                </div>
-                {cartoes.length === 0 ? (
-                  <div className="p-10 text-center text-slate-400 text-sm">
-                    Nenhum cartão cadastrado.
-                  </div>
-                ) : (
-                  <div className="divide-y divide-slate-100">
-                    {cartoes.map((cr) => (
-                      <div
-                        key={cr.id}
-                        className="p-4 sm:px-6 flex items-center justify-between gap-4"
-                      >
-                        <div>
-                          <p className="font-semibold text-slate-900 text-sm">
-                            {cr.nome_cartao}
-                          </p>
-                          <p className="text-xs text-slate-500 mt-0.5">
-                            {cr.bandeira} • {cr.tipo} • Fecha dia {cr.dia_fechamento} / Vence
-                            dia {cr.dia_vencimento}
-                          </p>
-                        </div>
-
-                        <div className="flex items-center gap-3">
-                          <div className="text-right">
-                            <p className="text-xs text-slate-400">Limite</p>
-                            <p className="font-bold text-slate-900 text-sm">
-                              {formatCurrency(cr.limite)}
-                            </p>
-                          </div>
-                          <button
-                            onClick={() =>
-                              setCartaoForm({
-                                id: cr.id,
-                                nome_cartao: cr.nome_cartao,
-                                bandeira: cr.bandeira || 'Mastercard',
-                                tipo: cr.tipo || 'CREDITO',
-                                limite: cr.limite ?? '',
-                                dia_fechamento: cr.dia_fechamento || 1,
-                                dia_vencimento: cr.dia_vencimento || 10,
-                                ativo: cr.ativo !== false,
-                              })
-                            }
-                            className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
-                          >
-                            <Edit3 className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteCartao(cr.id)}
-                            className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              </section>
             </div>
           )}
         </div>
@@ -4733,7 +5658,7 @@ ${JSON.stringify(itensDaNota)}`,
           >
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="font-bold text-slate-900">
-                {transacaoForm.id ? 'Editar Pagamento' : 'Novo Pagamento'}
+                {transacaoForm.id ? 'Editar Lançamento' : 'Novo Lançamento'}
               </h3>
               <button
                 type="button"
@@ -4752,7 +5677,7 @@ ${JSON.stringify(itensDaNota)}`,
                 <input
                   type="text"
                   required
-                  placeholder="Ex: Supermercado, Farmácia, Energia..."
+                  placeholder="Ex: Eletrônico, Energia, Internet..."
                   value={transacaoForm.descricao}
                   onChange={(e) =>
                     setTransacaoForm({ ...transacaoForm, descricao: e.target.value })
@@ -4875,26 +5800,6 @@ ${JSON.stringify(itensDaNota)}`,
                   </select>
                 </div>
               </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">
-                  Cartão (Opcional)
-                </label>
-                <select
-                  value={transacaoForm.cartao_id}
-                  onChange={(e) =>
-                    setTransacaoForm({ ...transacaoForm, cartao_id: e.target.value })
-                  }
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white"
-                >
-                  <option value="">Nenhum</option>
-                  {cartoes.map((cr) => (
-                    <option key={cr.id} value={cr.id}>
-                      {cr.nome_cartao}
-                    </option>
-                  ))}
-                </select>
-              </div>
             </div>
 
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
@@ -4909,31 +5814,51 @@ ${JSON.stringify(itensDaNota)}`,
                 type="submit"
                 className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold cursor-pointer"
               >
-                Salvar Pagamento
+                Salvar Lançamento
               </button>
             </div>
           </form>
         </div>
       )}
 
-      {/* BOTTOM BAR MOBILE */}
-      <nav className="md:hidden fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 z-40 flex items-center justify-around py-1.5 px-0.5 overflow-x-auto">
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const active = activeTab === item.id;
-          return (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`flex flex-col items-center justify-center py-1 px-1.5 rounded-xl text-[10px] font-medium transition cursor-pointer shrink-0 ${
-                active ? 'text-emerald-600 font-semibold' : 'text-slate-500'
-              }`}
-            >
-              <Icon className="w-4 h-4 mb-0.5" />
-              <span>{item.label}</span>
-            </button>
-          );
-        })}
+      {/* MENU INFERIOR MOBILE (SOMENTE ÍCONES • LAYOUT MODERNO) */}
+      <nav
+        className={`md:hidden fixed bottom-0 inset-x-0 z-40 border-t backdrop-blur-md transition-colors ${
+          darkMode
+            ? 'bg-slate-900/95 border-slate-800'
+            : 'bg-white/95 border-slate-200 shadow-[0_-4px_20px_rgba(15,23,42,0.06)]'
+        }`}
+      >
+        <div className="max-w-md mx-auto grid grid-cols-6 items-center px-2 py-2">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
+                title={item.label}
+                aria-label={item.label}
+                className="relative flex items-center justify-center py-1.5 cursor-pointer group"
+              >
+                <div
+                  className={`flex items-center justify-center w-11 h-11 rounded-2xl transition-all duration-200 ${
+                    active
+                      ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30 scale-105'
+                      : darkMode
+                      ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                      : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
+                  }`}
+                >
+                  <Icon className="w-5 h-5 stroke-[2.2]" />
+                </div>
+                {active && (
+                  <span className="absolute -bottom-0.5 w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                )}
+              </button>
+            );
+          })}
+        </div>
       </nav>
     </div>
   );
