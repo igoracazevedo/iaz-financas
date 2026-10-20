@@ -25,6 +25,7 @@ import {
   Check,
   FileText,
   ShoppingBag,
+  Upload,
 } from 'lucide-react';
 
 // ==========================================
@@ -494,7 +495,7 @@ export default function App() {
         model: 'gemini-3.8-flash',
         input: [
           {
-            type: 'image',
+            type: mimeType === 'application/pdf' ? 'document' : 'image',
             mime_type: mimeType,
             data: base64Data,
           },
@@ -1012,27 +1013,50 @@ Para forma_pagamento, normalize para uma destas: PIX, Cartão de Crédito, Cart�
                     </p>
                   </div>
 
-                  <label className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm shadow-xs cursor-pointer transition shrink-0">
-                    {ocrLoading ? (
-                      <>
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                        <span>Processando IA...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Camera className="w-5 h-5" />
-                        <span>Enviar / Fotografar Cupom</span>
-                      </>
-                    )}
-                    <input
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      onChange={handleFileUpload}
-                      disabled={ocrLoading}
-                      className="hidden"
-                    />
-                  </label>
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
+                    <label className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm shadow-xs cursor-pointer transition">
+                      {ocrLoading ? (
+                        <>
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                          <span>Processando IA...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Camera className="w-5 h-5" />
+                          <span>Tirar Foto</span>
+                        </>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={handleFileUpload}
+                        disabled={ocrLoading}
+                        className="hidden"
+                      />
+                    </label>
+
+                    <label className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold text-sm shadow-xs cursor-pointer transition">
+                      {ocrLoading ? (
+                        <>
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                          <span>Aguarde...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-5 h-5" />
+                          <span>Escolher Arquivo / Galeria</span>
+                        </>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        onChange={handleFileUpload}
+                        disabled={ocrLoading}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
                 </div>
 
                 {/* REVISÃO DOS DADOS EXTRAÍDOS PELA IA */}
