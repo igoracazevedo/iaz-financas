@@ -60,8 +60,10 @@ jobs:
           """
           if "android.permission.CAMERA" not in xml:
               xml = xml.replace("</manifest>", camera_permissions + "\n</manifest>")
-              with open(manifest_path, "w", encoding="utf-8") as f:
-                  f.write(xml)
+          if 'android:usesCleartextTraffic="true"' not in xml:
+              xml = xml.replace("<application", '<application android:usesCleartextTraffic="true"')
+          with open(manifest_path, "w", encoding="utf-8") as f:
+              f.write(xml)
           EOF
 
           cat > android/app/src/main/java/br/com/iaz/superfarma/MainActivity.java << 'EOF'
@@ -70,6 +72,8 @@ jobs:
           import android.Manifest;
           import android.content.pm.PackageManager;
           import android.os.Bundle;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
           import androidx.core.app.ActivityCompat;
           import androidx.core.content.ContextCompat;
           import com.getcapacitor.BridgeActivity;
@@ -81,6 +85,12 @@ jobs:
               public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   ensureCameraPermission();
+                  try {
+                      if (getBridge() != null && getBridge().getWebView() != null) {
+                          WebSettings settings = getBridge().getWebView().getSettings();
+                          settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                      }
+                  } catch (Exception ignored) {}
               }
 
               private void ensureCameraPermission() {

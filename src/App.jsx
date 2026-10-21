@@ -243,9 +243,24 @@ const decodificarChaveOuQrCode = (rawInput) => {
   let diaExtraido = '01';
   let valorExtraido = 0;
 
-  if (texto.includes('|')) {
-    const partesPipe = texto.split('|');
-    if (partesPipe.length >= 5) {
+  if (texto.includes('|') || texto.includes('%7C')) {
+    const pipeStr = decodeURIComponent(texto.includes('=') ? texto.split('=').pop() : texto);
+    const partesPipe = pipeStr.replace(/%7C/g, '|').split('|');
+
+    // Formato CF-e SAT / MFE Ceará e SP: chave44|YYYYMMDDhhmmss|valorTotal|...
+    if (partesPipe.length >= 3 && /^\d{8,14}$/.test(partesPipe[1])) {
+      const ts = partesPipe[1];
+      const d = ts.slice(6, 8);
+      if (Number(d) >= 1 && Number(d) <= 31) {
+        diaExtraido = d;
+      }
+      const v = Number(String(partesPipe[2]).replace(',', '.'));
+      if (v > 0 && v < 1000000) {
+        valorExtraido = v;
+      }
+    }
+    // Formato NFC-e v2 Contingência: chave44|2|tpAmb|dia|vNF|...
+    else if (partesPipe.length >= 5) {
       const possivelDia = Number(partesPipe[3]);
       const possivelValor = Number(String(partesPipe[4]).replace(',', '.'));
       if (possivelDia >= 1 && possivelDia <= 31) {
@@ -279,6 +294,222 @@ const decodificarChaveOuQrCode = (rawInput) => {
     urlOriginal: texto.startsWith('http') ? texto : '',
     portalSefaz: PORTAL_SEFAZ_UF[uf] || 'https://www.nfe.fazenda.gov.br/portal/consultaRecaptcha.aspx',
   };
+};
+
+// Consulta direta de dados e itens completos da Nota Fiscal nos servidores da SEFAZ via QR Code
+const consultarDadosCompletosSefaz = async (rawInput) => {
+  const texto = String(rawInput || '').trim();
+  if (!texto) return null;
+
+  const isCeara =
+    texto.includes('ce.gov.br') ||
+    /[?&]p=23/i.test(texto) ||
+    /^23\d{42}/.test(texto);
+
+  // 1. SEFAZ Ceará (NFC-e Model 65 / MFE)
+  if (isCeara && (texto.includes('|') || texto.includes('%7C') || texto.includes('nVersao=100'))) {
+    try {
+      const decoded = decodeURIComponent(texto);
+
+      // Versão 100
+      if (decoded.includes('nVersao=100')) {
+        const queryParams = new URLSearchParams(
+          decoded.includes('?') ? decoded.split('?')[1] : decoded
+        );
+        const postData = {
+          chNFe: queryParams.get('chNFe'),
+          nVersao: queryParams.get('nVersao'),
+          tpAmb: queryParams.get('tpAmb') || '1',
+          cDest: queryParams.get('cDest') || '',
+          dhEmi: queryParams.get('dhEmi'),
+          vNF: queryParams.get('vNF'),
+          vICMS: queryParams.get('vICMS'),
+          digVal: queryParams.get('digVal'),
+          cIdToken: queryParams.get('cIdToken'),
+          cHashQRCode: queryParams.get('cHashQRCode'),
+        };
+        const resp = await fetch('http://nfce.sefaz.ce.gov.br/nfce/api/notasFiscal/qrcode/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(postData),
+        });
+        if (resp.ok) {
+          const json = await resp.json();
+          if (json.xml) return { sucesso: true, htmlOuXml: json.xml, fonte: 'SEFAZ-CE' };
+        }
+      }
+
+      // Versão 2 ou 3 do QR Code SEFAZ-CE
+      const idxChave = decoded.search(/\d{44}/);
+      if (idxChave >= 0) {
+        const pipeStr = decoded.slice(idxChave);
+        const parametros = pipeStr.split('|');
+        const versao = parametros[1] || '2';
+        let postData = null;
+        let endpoint = 'http://nfce.sefaz.ce.gov.br/nfce/api/notasFiscal/qrcodev2/';
+
+        if (versao === '2') {
+          if (parametros[0].substring(34, 35) === '9') {
+            postData = {
+              chave_acesso: parametros[0],
+              versao_qrcode: parametros[1],
+              tipo_ambiente: parametros[2] || '1',
+              dia_data_emissao: parametros[3] || '01',
+              valor_total_nfce: parametros[4] || '0.00',
+              digVal: parametros[5] || '',
+              identificador_csc: parametros[6] || '1',
+              codigo_hash: parametros[7] || '',
+            };
+          } else {
+            postData = {
+              chave_acesso: parametros[0],
+              versao_qrcode: parametros[1],
+              tipo_ambiente: parametros[2] || '1',
+              identificador_csc: parametros[3] || '1',
+              codigo_hash: parametros[4] || '',
+            };
+          }
+        } else if (versao === '3') {
+          postData = {
+            chave_acesso: parametros[0],
+            versao_qrcode: parametros[1],
+            tipo_ambiente: parametros[2] || '1',
+          };
+          endpoint = 'http://nfce.sefaz.ce.gov.br/nfce/api/notasFiscal/qrcodev3/';
+        }
+
+        if (postData) {
+          const resp = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(postData),
+          });
+          if (resp.ok) {
+            const json = await resp.json();
+            if (json.xml) return { sucesso: true, htmlOuXml: json.xml, fonte: 'SEFAZ-CE' };
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Erro ao consultar API SEFAZ-CE:', err);
+    }
+  }
+
+  // 2. Se for uma URL de outro estado (RS, SP, MG, RJ, PR, etc.)
+  if (texto.startsWith('http://') || texto.startsWith('https://')) {
+    try {
+      const resp = await fetch(texto);
+      if (resp.ok) {
+        const html = await resp.text();
+        if (
+          html &&
+          (html.includes('tabResult') ||
+            html.includes('txtTit') ||
+            html.includes('DANFE') ||
+            html.includes('NF-e'))
+        ) {
+          return { sucesso: true, htmlOuXml: html, fonte: 'PORTAL_SEFAZ' };
+        }
+      }
+    } catch {
+      // continua para fallback
+    }
+  }
+
+  return null;
+};
+
+// Parser de HTML e XML retornado pela SEFAZ
+const extrairDadosHtmlNfce = (htmlStr) => {
+  if (!htmlStr) return null;
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(htmlStr, 'text/html');
+
+    // Extrai itens dos produtos
+    const itens = [];
+    const linhas = doc.querySelectorAll('#tabResult tr, table tr');
+    linhas.forEach((tr) => {
+      const descEl = tr.querySelector('.txtTit, .rcod, span[class*="desc"], td:first-child');
+      const qtdEl = tr.querySelector('.Rqtd, span[class*="qtd"]');
+      const unEl = tr.querySelector('.RUN, span[class*="un"]');
+      const vlUnitEl = tr.querySelector('.RvlUnit, span[class*="unit"]');
+      const vlTotEl = tr.querySelector('.valor, span[class*="total"], td:last-child');
+
+      const desc = descEl?.textContent?.trim();
+      if (
+        desc &&
+        desc.length > 1 &&
+        !desc.toLowerCase().includes('total') &&
+        !desc.toLowerCase().includes('descrição')
+      ) {
+        const qtd =
+          Number(
+            String(qtdEl?.textContent || '1')
+              .replace(/\D*([0-9.,]+).*/, '$1')
+              .replace(',', '.')
+          ) || 1;
+        const un =
+          String(unEl?.textContent || 'UN')
+            .replace(/[^a-zA-Z]/g, '')
+            .toUpperCase() || 'UN';
+        const vUnit =
+          Number(
+            String(vlUnitEl?.textContent || '0')
+              .replace(/\D*([0-9.,]+).*/, '$1')
+              .replace(',', '.')
+          ) || 0;
+        const vTot =
+          Number(
+            String(vlTotEl?.textContent || '0')
+              .replace(/\D*([0-9.,]+).*/, '$1')
+              .replace(',', '.')
+          ) || Number((qtd * vUnit).toFixed(2));
+
+        itens.push({
+          descricao_item: desc,
+          quantidade: qtd,
+          unidade: un,
+          valor_unitario: vUnit || (qtd > 0 ? Number((vTot / qtd).toFixed(2)) : 0),
+          valor_total: vTot,
+          categoria_item: 'Alimentação & Supermercado',
+          garantia_meses: 0,
+        });
+      }
+    });
+
+    const textContent = doc.body?.textContent || htmlStr;
+    const matchTotal =
+      textContent.match(/Valor\s+a\s+pagar\s*(?:R\$)?\s*([0-9.,]+)/i) ||
+      textContent.match(/Valor\s+Total\s*(?:R\$)?\s*([0-9.,]+)/i) ||
+      textContent.match(/Total\s+R\$\s*([0-9.,]+)/i);
+    const matchDesconto = textContent.match(/Descontos?\s*(?:R\$)?\s*([0-9.,]+)/i);
+    const matchData = textContent.match(/(\d{2}\/\d{2}\/\d{4}(?:\s+\d{2}:\d{2}:\d{2})?)/);
+    const matchEstabelecimento = doc.querySelector(
+      '.txtTopo, .topo, h2, h3, #conteudo h4'
+    )?.textContent?.trim();
+
+    const valorTotal = matchTotal ? Number(matchTotal[1].replace(',', '.')) : 0;
+    const desconto = matchDesconto ? Number(matchDesconto[1].replace(',', '.')) : 0;
+
+    let dataIso = '';
+    if (matchData) {
+      const [dia, mes, ano] = matchData[1].split(' ')[0].split('/');
+      dataIso = `${ano}-${mes}-${dia}`;
+    }
+
+    return {
+      itens,
+      valorTotal: valorTotal || itens.reduce((acc, i) => acc + i.valor_total, 0),
+      desconto,
+      dataEmissao: dataIso,
+      estabelecimento: matchEstabelecimento || '',
+      textoCompleto: textContent.replace(/\s+/g, ' ').slice(0, 4000),
+    };
+  } catch (err) {
+    console.warn('Erro ao processar HTML da NFC-e:', err);
+    return null;
+  }
 };
 
 // Normaliza e preserva a data real da compra na importação de notas (Agosto, Setembro, Outubro, etc.)
@@ -2407,20 +2638,18 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
         }
 
         try {
+          let detectedQr = null;
+
           // 1. Tenta BarcodeDetector nativo se disponível
           if (detector) {
             const barcodes = await detector.detect(video);
             if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
-              setQrChaveInput(barcodes[0].rawValue);
-              clearInterval(interval);
-              stopQrCamera();
-              showNotice('QR Code / Código de Barras lido com sucesso!');
-              return;
+              detectedQr = barcodes[0].rawValue;
             }
           }
 
           // 2. Decodificador universal jsQR (funciona em 100% dos celulares Android / WebView)
-          if (ctx) {
+          if (!detectedQr && ctx) {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -2429,12 +2658,22 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
               inversionAttempts: 'dontInvert',
             });
             if (code && code.data) {
-              setQrChaveInput(code.data);
-              clearInterval(interval);
-              stopQrCamera();
-              showNotice('QR Code da nota lido com sucesso pela câmera!');
-              return;
+              detectedQr = code.data;
             }
+          }
+
+          if (detectedQr) {
+            clearInterval(interval);
+            setQrChaveInput(detectedQr);
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const snapshotDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            stopQrCamera();
+            showNotice('QR Code lido! Consultando dados e itens na SEFAZ...');
+            // Inicia importação automática com consulta na SEFAZ e foto do cupom
+            handleImportarPorChaveOuQrCode(detectedQr, snapshotDataUrl);
+            return;
           }
         } catch {
           // continua escaneando
@@ -2458,53 +2697,33 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
 
     // Tenta jsQR primeiro no frame capturado
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const qr = jsQR(imgData.data, imgData.width, imgData.height);
+    stopQrCamera();
+
     if (qr && qr.data) {
       setQrChaveInput(qr.data);
-      stopQrCamera();
-      showNotice('QR Code identificado na captura!');
+      showNotice('QR Code identificado na captura! Consultando itens...');
+      handleImportarPorChaveOuQrCode(qr.data, dataUrl);
       return;
     }
 
-    // Se o QR estiver amassado/ilegível, envia o frame capturado para o Gemini IA ler tudo
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-    const base64Data = dataUrl.split(',')[1];
-    stopQrCamera();
+    // Se o QR estiver cortado/ilegível, importa diretamente pela foto capturada via IA
+    setPreviewImage(dataUrl);
     setQrLoading(true);
     try {
-      setPreviewImage(dataUrl);
-      const interaction = await callGeminiWithFallback({
-        input: [
-          {
-            type: 'image',
-            mime_type: 'image/jpeg',
-            data: base64Data,
-          },
-          {
-            type: 'text',
-            text: 'Extraia a Chave de Acesso de 44 dígitos (ou a URL do QR Code), o nome do estabelecimento, CNPJ, data de emissão (YYYY-MM-DD) e valor total desta imagem de Nota Fiscal / QR Code.',
-          },
-        ],
-        response_format: [
-          {
-            type: 'text',
-            mime_type: 'application/json',
-            schema: NOTA_JSON_SCHEMA,
-          },
-        ],
-      });
-      const parsed = JSON.parse(interaction.output_text || '{}');
-      if (parsed.chave_acesso) {
-        setQrChaveInput(parsed.chave_acesso);
-      }
-      const dataReal = resolverDataEmissaoReal(
-        parsed.data_emissao,
-        parsed.chave_acesso,
-        null
+      const base64Data = dataUrl.split(',')[1];
+      const parsed = await extrairNotaViaGemini(
+        base64Data,
+        'image/jpeg',
+        '',
+        'Extraia todos os itens, chave de acesso, CNPJ e totais desta foto da nota fiscal.'
       );
+      if (parsed.chave_acesso) setQrChaveInput(parsed.chave_acesso);
+      const dataReal = resolverDataEmissaoReal(parsed.data_emissao, parsed.chave_acesso, null);
       setExtractedNota({
         estabelecimento: parsed.estabelecimento || 'Estabelecimento',
         cnpj: parsed.cnpj || '',
@@ -2520,7 +2739,7 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
       });
       setMetodoImportacaoAtivo(null);
       window.scrollTo({ top: 0, behavior: 'smooth' });
-      showNotice('Dados capturados da câmera pela IA! Revise no topo da tela.');
+      showNotice('Dados e itens lidos da captura pela IA! Revise no topo da tela.');
     } catch (err) {
       showNotice(`Erro ao analisar captura: ${err.message}`, 'error');
     } finally {
@@ -2533,72 +2752,52 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
     if (!file) return;
     setQrLoading(true);
     try {
-      // 1. Tenta BarcodeDetector nativo ou jsQR na imagem primeiro
+      let detectedQr = null;
+      const { base64Data, dataUrl, mimeType } = await fileToBase64(file);
+      setPreviewImage(dataUrl);
+
+      // 1. Tenta extrair o QR Code da imagem
       try {
         const bitmap = await createImageBitmap(file);
         if ('BarcodeDetector' in window) {
-          const detector = new window.BarcodeDetector({
-            formats: ['qr_code', 'code_128'],
-          });
+          const detector = new window.BarcodeDetector({ formats: ['qr_code', 'code_128'] });
           const codes = await detector.detect(bitmap);
           if (codes && codes.length > 0 && codes[0].rawValue) {
-            setQrChaveInput(codes[0].rawValue);
-            showNotice('QR Code extraído da imagem com sucesso!');
-            setQrLoading(false);
-            e.target.value = '';
-            return;
+            detectedQr = codes[0].rawValue;
           }
         }
-        const canvas = document.createElement('canvas');
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(bitmap, 0, 0);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const qr = jsQR(imageData.data, imageData.width, imageData.height);
-        if (qr && qr.data) {
-          setQrChaveInput(qr.data);
-          showNotice('QR Code extraído da foto com sucesso!');
-          setQrLoading(false);
-          e.target.value = '';
-          return;
+        if (!detectedQr) {
+          const canvas = document.createElement('canvas');
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(bitmap, 0, 0);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const qr = jsQR(imageData.data, imageData.width, imageData.height);
+          if (qr && qr.data) {
+            detectedQr = qr.data;
+          }
         }
       } catch {
-        // Segue para leitura via Gemini IA
+        // segue para Gemini IA
       }
 
-      // 2. Usa Gemini IA para ler o QR Code / Chave de 44 dígitos e os dados da imagem
-      const { base64Data, dataUrl, mimeType } = await fileToBase64(file);
-      setPreviewImage(dataUrl);
-      const interaction = await callGeminiWithFallback({
-        input: [
-          {
-            type: 'image',
-            mime_type: mimeType,
-            data: base64Data,
-          },
-          {
-            type: 'text',
-            text: 'Extraia a Chave de Acesso de 44 dígitos (ou a URL do QR Code), o nome do estabelecimento, CNPJ, data de emissão (YYYY-MM-DD) e valor total desta imagem de Nota Fiscal / QR Code.',
-          },
-        ],
-        response_format: [
-          {
-            type: 'text',
-            mime_type: 'application/json',
-            schema: NOTA_JSON_SCHEMA,
-          },
-        ],
-      });
-      const parsed = JSON.parse(interaction.output_text || '{}');
-      if (parsed.chave_acesso) {
-        setQrChaveInput(parsed.chave_acesso);
+      if (detectedQr) {
+        setQrChaveInput(detectedQr);
+        showNotice('QR Code identificado na foto! Consultando dados e itens...');
+        await handleImportarPorChaveOuQrCode(detectedQr, dataUrl);
+        return;
       }
-      const dataReal = resolverDataEmissaoReal(
-        parsed.data_emissao,
-        parsed.chave_acesso,
-        file
+
+      // 2. Se a foto não continha QR Code legível, extrai a nota e os itens diretamente pelo OCR do Gemini
+      const parsed = await extrairNotaViaGemini(
+        base64Data,
+        mimeType,
+        '',
+        `Arquivo: ${file.name} - Extraia estabelecimento, CNPJ, data, totais e todos os itens desta nota.`
       );
+      if (parsed.chave_acesso) setQrChaveInput(parsed.chave_acesso);
+      const dataReal = resolverDataEmissaoReal(parsed.data_emissao, parsed.chave_acesso, file);
       setExtractedNota({
         estabelecimento: parsed.estabelecimento || 'Estabelecimento',
         cnpj: parsed.cnpj || '',
@@ -2614,17 +2813,21 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
       });
       setMetodoImportacaoAtivo(null);
       window.scrollTo({ top: 0, behavior: 'smooth' });
-      showNotice('Dados do QR Code / Chave lidos pela IA! Revise no topo da tela.');
+      showNotice('Nota e itens lidos pela IA! Revise no topo da tela.');
     } catch (err) {
-      showNotice(`Erro ao ler QR Code: ${err.message}`, 'error');
+      showNotice(`Erro ao processar imagem: ${err.message}`, 'error');
     } finally {
       setQrLoading(false);
       e.target.value = '';
     }
   };
 
-  const handleImportarPorChaveOuQrCode = async () => {
-    if (!qrChaveInput.trim()) {
+  const handleImportarPorChaveOuQrCode = async (
+    chaveOuQrInputParam = null,
+    imagemOpcionalParam = null
+  ) => {
+    const rawTarget = String(chaveOuQrInputParam ?? qrChaveInput ?? '').trim();
+    if (!rawTarget) {
       return showNotice(
         'Informe a Chave de Acesso de 44 dígitos ou escaneie o QR Code.',
         'error'
@@ -2633,12 +2836,12 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
 
     setQrLoading(true);
     try {
-      const info = decodificarChaveOuQrCode(qrChaveInput);
+      const info = decodificarChaveOuQrCode(rawTarget);
       let nomeEstabelecimento = '';
       let cnpjFormatado = info?.cnpjFormatado || '';
       let categoriaDetectada = CATEGORIAS_DESPESA[0];
 
-      // 1. Consulta pública automática do CNPJ da chave de acesso na BrasilAPI
+      // 1. Consulta pública automática do CNPJ da chave de acesso na BrasilAPI para obter a loja real
       if (info?.cnpjRaw && info.cnpjRaw.length === 14) {
         try {
           const resp = await fetch(
@@ -2651,14 +2854,15 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
             const cnaeDesc = String(
               cnpjData.cnae_fiscal_descricao || ''
             ).toLowerCase();
+            const nomeLoja = nomeEstabelecimento.toLowerCase();
             if (
               cnaeDesc.includes('farmac') ||
               cnaeDesc.includes('drogaria') ||
               cnaeDesc.includes('medicamento') ||
               cnaeDesc.includes('perfumaria') ||
-              nomeEstabelecimento.toLowerCase().includes('farma') ||
-              nomeEstabelecimento.toLowerCase().includes('drog') ||
-              nomeEstabelecimento.toLowerCase().includes('pague menos')
+              nomeLoja.includes('farma') ||
+              nomeLoja.includes('drog') ||
+              nomeLoja.includes('pague menos')
             ) {
               categoriaDetectada = 'Saúde & Farmácia';
             } else if (
@@ -2667,7 +2871,9 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
               cnaeDesc.includes('minimercado') ||
               cnaeDesc.includes('alimento') ||
               cnaeDesc.includes('hortifrut') ||
-              cnaeDesc.includes('padaria')
+              cnaeDesc.includes('padaria') ||
+              nomeLoja.includes('mercad') ||
+              nomeLoja.includes('sao luiz')
             ) {
               categoriaDetectada = 'Alimentação & Supermercado';
             }
@@ -2682,98 +2888,192 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
         ? `${info.anoMes}-${diaEscolhido}`
         : new Date().toISOString().split('T')[0];
 
-      // 2. Se o usuário também colou o texto/itens copiados da SEFAZ, usa a IA para extrair todos os itens
-      if (qrTextoSefaz.trim()) {
-        const parsed = await extrairNotaViaGemini(
-          '',
-          'text/plain',
-          qrTextoSefaz,
-          `Chave: ${info?.chave44 || qrChaveInput} | Data da Chave: ${dataPelaChave} | Loja pelo CNPJ: ${nomeEstabelecimento}`
-        );
+      let itensExtraidos = [];
+      let valorTotalFinal = Number(qrValorManual) || Number(info?.valorExtraido) || 0;
+      let descontoFinal = 0;
+      let dataEmissaoFinal = dataPelaChave;
+      let textoSefazParaIa = qrTextoSefaz.trim();
 
-        const dataFinal = resolverDataEmissaoReal(
-          parsed.data_emissao,
-          info?.chave44 || parsed.chave_acesso,
-          null,
-          info?.valida ? dataPelaChave : ''
-        );
+      // 2. Consulta direta de itens nos servidores da SEFAZ pelo QR Code (SEFAZ-CE, etc.)
+      const resultadoSefaz = await consultarDadosCompletosSefaz(rawTarget);
+      if (resultadoSefaz?.htmlOuXml) {
+        const dadosParsed = extrairDadosHtmlNfce(resultadoSefaz.htmlOuXml);
+        if (dadosParsed) {
+          if (dadosParsed.itens && dadosParsed.itens.length > 0) {
+            itensExtraidos = dadosParsed.itens;
+          }
+          if (dadosParsed.valorTotal > 0) valorTotalFinal = dadosParsed.valorTotal;
+          if (dadosParsed.desconto > 0) descontoFinal = dadosParsed.desconto;
+          if (dadosParsed.dataEmissao) dataEmissaoFinal = dadosParsed.dataEmissao;
+          if (dadosParsed.estabelecimento && !nomeEstabelecimento) {
+            nomeEstabelecimento = dadosParsed.estabelecimento;
+          }
+          textoSefazParaIa = dadosParsed.textoCompleto || textoSefazParaIa;
+        }
+      }
 
-        setExtractedNota({
-          estabelecimento:
-            nomeEstabelecimento ||
-            parsed.estabelecimento ||
-            `Nota Fiscal #${info?.numeroNota || ''}`,
-          cnpj: cnpjFormatado || parsed.cnpj || '',
-          data_emissao: dataFinal,
-          valor_total:
-            Number(qrValorManual) ||
-            Number(parsed.valor_total) ||
-            info?.valorExtraido ||
-            0,
-          desconto: Number(parsed.desconto) || 0,
-          forma_pagamento: parsed.forma_pagamento || 'PIX',
-          chave_acesso: info?.chave44 || parsed.chave_acesso || qrChaveInput.trim(),
-          categoria_geral:
-            parsed.categoria_geral && parsed.categoria_geral !== 'Outros'
-              ? parsed.categoria_geral
-              : categoriaDetectada,
-          cartao_id: '',
-          status_pagamento: 'CONFIRMADO',
-          itens: Array.isArray(parsed.itens) ? parsed.itens : [],
-        });
-        setMetodoImportacaoAtivo(null);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+      // 3. Se temos texto da SEFAZ, usa a IA para classificar as categorias dos itens
+      if (textoSefazParaIa && (itensExtraidos.length === 0 || effectiveGeminiKey)) {
+        try {
+          const parsed = await extrairNotaViaGemini(
+            '',
+            'text/plain',
+            textoSefazParaIa,
+            `Chave: ${info?.chave44 || rawTarget} | Data: ${dataEmissaoFinal} | Loja: ${nomeEstabelecimento}`
+          );
+          if (Array.isArray(parsed.itens) && parsed.itens.length > 0) {
+            itensExtraidos = parsed.itens;
+          }
+          if (Number(parsed.valor_total) > 0) valorTotalFinal = Number(parsed.valor_total);
+          if (Number(parsed.desconto) > 0) descontoFinal = Number(parsed.desconto);
+          if (parsed.data_emissao) {
+            dataEmissaoFinal = resolverDataEmissaoReal(
+              parsed.data_emissao,
+              info?.chave44 || parsed.chave_acesso,
+              null,
+              dataEmissaoFinal
+            );
+          }
+          if (parsed.estabelecimento && !nomeEstabelecimento) {
+            nomeEstabelecimento = parsed.estabelecimento;
+          }
+          if (parsed.categoria_geral && parsed.categoria_geral !== 'Outros') {
+            categoriaDetectada = parsed.categoria_geral;
+          }
+        } catch (e) {
+          console.warn('Fallback IA com texto da SEFAZ:', e);
+        }
+      }
+
+      // 4. Se a SEFAZ não retornou os itens, mas temos a imagem do cupom (da câmera ou arquivo), extrai os itens da foto via Gemini IA!
+      const imagemParaUsar = imagemOpcionalParam || previewImage;
+      if (itensExtraidos.length === 0 && imagemParaUsar && effectiveGeminiKey) {
+        try {
+          const base64Data = imagemParaUsar.includes(',')
+            ? imagemParaUsar.split(',')[1]
+            : imagemParaUsar;
+          const parsedFromImg = await extrairNotaViaGemini(
+            base64Data,
+            'image/jpeg',
+            '',
+            `Loja: ${nomeEstabelecimento} | Chave: ${info?.chave44 || rawTarget} | Data: ${dataEmissaoFinal}`
+          );
+          if (Array.isArray(parsedFromImg.itens) && parsedFromImg.itens.length > 0) {
+            itensExtraidos = parsedFromImg.itens;
+          }
+          if (Number(parsedFromImg.valor_total) > 0 && valorTotalFinal === 0) {
+            valorTotalFinal = Number(parsedFromImg.valor_total);
+          }
+          if (Number(parsedFromImg.desconto) > 0 && descontoFinal === 0) {
+            descontoFinal = Number(parsedFromImg.desconto);
+          }
+          if (parsedFromImg.data_emissao) {
+            dataEmissaoFinal = resolverDataEmissaoReal(
+              parsedFromImg.data_emissao,
+              info?.chave44,
+              null,
+              dataEmissaoFinal
+            );
+          }
+        } catch (e) {
+          console.warn('Erro ao ler itens da imagem:', e);
+        }
+      }
+
+      // 5. Se após todas as tentativas houver valor total mas nenhum item separado, gera 1 item resumido da compra
+      if (itensExtraidos.length === 0 && valorTotalFinal > 0) {
+        itensExtraidos = [
+          {
+            descricao_item: `Compra em ${
+              nomeEstabelecimento || 'Estabelecimento'
+            } (NF #${info?.numeroNota || ''})`,
+            quantidade: 1,
+            unidade: 'UN',
+            valor_unitario: valorTotalFinal,
+            valor_total: valorTotalFinal,
+            categoria_item: categoriaDetectada,
+            garantia_meses: 0,
+          },
+        ];
+      }
+
+      setExtractedNota({
+        estabelecimento:
+          nomeEstabelecimento ||
+          `Estabelecimento (${info?.uf || 'NF'} #${info?.numeroNota || ''})`,
+        cnpj: cnpjFormatado || info?.cnpjFormatado || '',
+        data_emissao: dataEmissaoFinal,
+        valor_total: valorTotalFinal,
+        desconto: descontoFinal,
+        forma_pagamento: 'PIX',
+        chave_acesso: info?.chave44 || rawTarget,
+        categoria_geral: categoriaDetectada,
+        cartao_id: '',
+        status_pagamento: 'CONFIRMADO',
+        itens: itensExtraidos,
+      });
+
+      setMetodoImportacaoAtivo(null);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+
+      if (itensExtraidos.length > 0) {
         showNotice(
-          `Nota e ${
-            (parsed.itens || []).length
-          } item(ns) extraídos com a data preservada (${formatDateBR(dataFinal)})! Revise no topo.`
+          `Nota e ${itensExtraidos.length} item(ns) identificados (${formatDateBR(dataEmissaoFinal)})! Revise no topo.`
         );
       } else {
-        // Preenche com todos os dados extraídos da Chave de 44 dígitos + CNPJ BrasilAPI
-        const valorTotalFinal =
-          Number(qrValorManual) || Number(info?.valorExtraido) || 0;
-        setExtractedNota({
-          estabelecimento:
-            nomeEstabelecimento ||
-            `Estabelecimento (${info?.uf || 'NF'} #${info?.numeroNota || ''})`,
-          cnpj: cnpjFormatado,
-          data_emissao: dataPelaChave,
-          valor_total: valorTotalFinal,
-          desconto: 0,
-          forma_pagamento: 'PIX',
-          chave_acesso: info?.chave44 || qrChaveInput.trim(),
-          categoria_geral: categoriaDetectada,
-          cartao_id: '',
-          status_pagamento: 'CONFIRMADO',
-          itens:
-            valorTotalFinal > 0
-              ? [
-                  {
-                    descricao_item: `Compra em ${
-                      nomeEstabelecimento || 'Estabelecimento'
-                    } (NF #${info?.numeroNota || ''})`,
-                    quantidade: 1,
-                    unidade: 'UN',
-                    valor_unitario: valorTotalFinal,
-                    valor_total: valorTotalFinal,
-                    categoria_item: categoriaDetectada,
-                    garantia_meses: 0,
-                  },
-                ]
-              : [],
-        });
-        setMetodoImportacaoAtivo(null);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
         showNotice(
-          `Chave decodificada! Loja: ${
-            nomeEstabelecimento || cnpjFormatado
-          } • Data preservada: ${formatDateBR(dataPelaChave)}. Revise no topo!`
+          `Nota identificada (${nomeEstabelecimento || 'Loja'}). Você pode fotografar os itens no botão abaixo!`,
+          'success'
         );
       }
     } catch (err) {
+      console.error('Erro ao processar chave/QR Code:', err);
       showNotice(`Erro ao processar chave/QR Code: ${err.message}`, 'error');
     } finally {
       setQrLoading(false);
+    }
+  };
+
+  // Permite fotografar a lista de itens do cupom fiscal para preencher a nota caso o portal da SEFAZ não devolva os itens
+  const handleExtrairItensComplementaresDaFoto = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !extractedNota) return;
+    setOcrLoading(true);
+    try {
+      const { base64Data, dataUrl, mimeType } = await fileToBase64(file);
+      setPreviewImage(dataUrl);
+      const parsed = await extrairNotaViaGemini(
+        base64Data,
+        mimeType,
+        '',
+        `Extraia todos os itens, quantidades, valores e desconto desta nota fiscal da loja: ${extractedNota.estabelecimento}`
+      );
+      const novosItens =
+        Array.isArray(parsed.itens) && parsed.itens.length > 0
+          ? parsed.itens
+          : extractedNota.itens;
+      const novoTotal =
+        Number(parsed.valor_total) > 0 ? Number(parsed.valor_total) : extractedNota.valor_total;
+      const novoDesconto =
+        Number(parsed.desconto) > 0 ? Number(parsed.desconto) : extractedNota.desconto;
+
+      setExtractedNota({
+        ...extractedNota,
+        itens: novosItens,
+        valor_total:
+          novoTotal ||
+          novosItens.reduce((acc, i) => acc + (Number(i.valor_total) || 0), 0),
+        desconto: novoDesconto,
+      });
+
+      showNotice(
+        `Itens extraídos da foto com sucesso (${novosItens.length} itens encontrados)!`
+      );
+    } catch (err) {
+      showNotice(`Erro ao ler itens da foto: ${err.message}`, 'error');
+    } finally {
+      setOcrLoading(false);
+      e.target.value = '';
     }
   };
 
@@ -4254,139 +4554,201 @@ ${JSON.stringify(itensDaNota)}`,
                     </div>
 
                     <div>
-                      <div className="flex items-center justify-between mb-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                         <h5 className="text-xs font-bold uppercase tracking-wider text-slate-500">
                           Itens da Nota & Garantia em Meses ({extractedNota.itens.length})
                         </h5>
-                        <button
-                          type="button"
-                          onClick={handleAddItemNota}
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg cursor-pointer"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>Adicionar Item</span>
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold cursor-pointer shadow-xs transition">
+                            {ocrLoading ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Lendo itens com IA...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Camera className="w-3.5 h-3.5" />
+                                <span>Fotografar Itens do Cupom (IA)</span>
+                              </>
+                            )}
+                            <input
+                              type="file"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={handleExtrairItensComplementaresDaFoto}
+                              disabled={ocrLoading}
+                              className="hidden"
+                            />
+                          </label>
+
+                          <button
+                            type="button"
+                            onClick={handleAddItemNota}
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800 bg-emerald-50 px-2.5 py-1.5 rounded-xl border border-emerald-200 cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Adicionar Item</span>
+                          </button>
+                        </div>
                       </div>
-                      <div className="border border-slate-200 rounded-xl overflow-x-auto">
-                        <table className="w-full text-left text-xs">
-                          <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
-                            <tr>
-                              <th className="py-2.5 px-2 min-w-[160px]">Item</th>
-                              <th className="py-2.5 px-2 w-18">Qtd</th>
-                              <th className="py-2.5 px-2 w-16">Unid</th>
-                              <th className="py-2.5 px-2 w-24">V. Unit</th>
-                              <th className="py-2.5 px-2 w-24">Total</th>
-                              <th className="py-2.5 px-2 w-32">Garantia (meses)</th>
-                              <th className="py-2.5 px-2 min-w-[150px]">Categoria</th>
-                              <th className="py-2.5 px-2 w-10"></th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100">
-                            {extractedNota.itens.map((it, idx) => (
-                              <tr key={idx}>
-                                <td className="py-1.5 px-2">
-                                  <input
-                                    type="text"
-                                    value={it.descricao_item}
-                                    onChange={(e) =>
-                                      handleItemChange(idx, 'descricao_item', e.target.value)
-                                    }
-                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-800 font-medium"
-                                  />
-                                </td>
-                                <td className="py-1.5 px-2">
-                                  <input
-                                    type="number"
-                                    step="0.001"
-                                    value={it.quantidade}
-                                    onChange={(e) =>
-                                      handleItemChange(idx, 'quantidade', e.target.value)
-                                    }
-                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-700"
-                                  />
-                                </td>
-                                <td className="py-1.5 px-2">
-                                  <input
-                                    type="text"
-                                    value={it.unidade}
-                                    onChange={(e) =>
-                                      handleItemChange(idx, 'unidade', e.target.value)
-                                    }
-                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-700"
-                                  />
-                                </td>
-                                <td className="py-1.5 px-2">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    value={it.valor_unitario}
-                                    onChange={(e) =>
-                                      handleItemChange(idx, 'valor_unitario', e.target.value)
-                                    }
-                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-700"
-                                  />
-                                </td>
-                                <td className="py-1.5 px-2">
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    value={it.valor_total}
-                                    onChange={(e) =>
-                                      handleItemChange(idx, 'valor_total', e.target.value)
-                                    }
-                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 font-semibold text-slate-900"
-                                  />
-                                </td>
-                                <td className="py-1.5 px-2">
-                                  <div className="flex items-center gap-1">
+
+                      {extractedNota.itens.length === 0 ? (
+                        <div className="p-5 bg-emerald-50/70 border border-dashed border-emerald-300 rounded-2xl text-center space-y-3">
+                          <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 mx-auto">
+                            <Sparkles className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <p className="font-bold text-slate-900 text-sm">
+                              {extractedNota.estabelecimento}
+                            </p>
+                            <p className="text-xs text-slate-600 max-w-md mx-auto mt-0.5">
+                              A loja e a chave foram identificadas! Para preencher todos os produtos, quantidades e valores automaticamente, tire uma foto da lista de itens do cupom fiscal:
+                            </p>
+                          </div>
+                          <label className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs shadow-xs cursor-pointer transition">
+                            {ocrLoading ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                <span>Lendo produtos pela IA...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Camera className="w-4 h-4" />
+                                <span>Fotografar Tabela de Itens do Cupom Fiscal</span>
+                              </>
+                            )}
+                            <input
+                              type="file"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={handleExtrairItensComplementaresDaFoto}
+                              disabled={ocrLoading}
+                              className="hidden"
+                            />
+                          </label>
+                        </div>
+                      ) : (
+                        <div className="border border-slate-200 rounded-xl overflow-x-auto">
+                          <table className="w-full text-left text-xs">
+                            <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                              <tr>
+                                <th className="py-2.5 px-2 min-w-[160px]">Item</th>
+                                <th className="py-2.5 px-2 w-18">Qtd</th>
+                                <th className="py-2.5 px-2 w-16">Unid</th>
+                                <th className="py-2.5 px-2 w-24">V. Unit</th>
+                                <th className="py-2.5 px-2 w-24">Total</th>
+                                <th className="py-2.5 px-2 w-32">Garantia (meses)</th>
+                                <th className="py-2.5 px-2 min-w-[150px]">Categoria</th>
+                                <th className="py-2.5 px-2 w-10"></th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {extractedNota.itens.map((it, idx) => (
+                                <tr key={idx}>
+                                  <td className="py-1.5 px-2">
+                                    <input
+                                      type="text"
+                                      value={it.descricao_item}
+                                      onChange={(e) =>
+                                        handleItemChange(idx, 'descricao_item', e.target.value)
+                                      }
+                                      className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-800 font-medium"
+                                    />
+                                  </td>
+                                  <td className="py-1.5 px-2">
                                     <input
                                       type="number"
-                                      min="0"
-                                      max="120"
-                                      placeholder="0"
-                                      value={it.garantia_meses ?? 0}
+                                      step="0.001"
+                                      value={it.quantidade}
                                       onChange={(e) =>
-                                        handleItemChange(
-                                          idx,
-                                          'garantia_meses',
-                                          e.target.value
-                                        )
+                                        handleItemChange(idx, 'quantidade', e.target.value)
                                       }
-                                      className="w-16 px-2 py-1 rounded-lg border border-slate-200 text-slate-800 font-semibold"
+                                      className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-700"
                                     />
-                                    <span className="text-[11px] text-slate-400">m</span>
-                                  </div>
-                                </td>
-                                <td className="py-1.5 px-2">
-                                  <select
-                                    value={it.categoria_item}
-                                    onChange={(e) =>
-                                      handleItemChange(idx, 'categoria_item', e.target.value)
-                                    }
-                                    className="w-full px-2 py-1 rounded-lg border border-slate-200 bg-white text-slate-700"
-                                  >
-                                    {CATEGORIAS_DESPESA.map((cat) => (
-                                      <option key={cat} value={cat}>
-                                        {cat}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </td>
-                                <td className="py-1.5 px-2 text-center">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRemoveItemNota(idx)}
-                                    className="p-1 text-slate-400 hover:text-rose-600 rounded cursor-pointer"
-                                    title="Remover item"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                                  </td>
+                                  <td className="py-1.5 px-2">
+                                    <input
+                                      type="text"
+                                      value={it.unidade}
+                                      onChange={(e) =>
+                                        handleItemChange(idx, 'unidade', e.target.value)
+                                      }
+                                      className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-700"
+                                    />
+                                  </td>
+                                  <td className="py-1.5 px-2">
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      value={it.valor_unitario}
+                                      onChange={(e) =>
+                                        handleItemChange(idx, 'valor_unitario', e.target.value)
+                                      }
+                                      className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-700"
+                                    />
+                                  </td>
+                                  <td className="py-1.5 px-2">
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      value={it.valor_total}
+                                      onChange={(e) =>
+                                        handleItemChange(idx, 'valor_total', e.target.value)
+                                      }
+                                      className="w-full px-2 py-1 rounded-lg border border-slate-200 font-semibold text-slate-900"
+                                    />
+                                  </td>
+                                  <td className="py-1.5 px-2">
+                                    <div className="flex items-center gap-1">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max="120"
+                                        placeholder="0"
+                                        value={it.garantia_meses ?? 0}
+                                        onChange={(e) =>
+                                          handleItemChange(
+                                            idx,
+                                            'garantia_meses',
+                                            e.target.value
+                                          )
+                                        }
+                                        className="w-16 px-2 py-1 rounded-lg border border-slate-200 text-slate-800 font-semibold"
+                                      />
+                                      <span className="text-[11px] text-slate-400">m</span>
+                                    </div>
+                                  </td>
+                                  <td className="py-1.5 px-2">
+                                    <select
+                                      value={it.categoria_item}
+                                      onChange={(e) =>
+                                        handleItemChange(idx, 'categoria_item', e.target.value)
+                                      }
+                                      className="w-full px-2 py-1 rounded-lg border border-slate-200 bg-white text-slate-700"
+                                    >
+                                      {CATEGORIAS_DESPESA.map((cat) => (
+                                        <option key={cat} value={cat}>
+                                          {cat}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td className="py-1.5 px-2 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveItemNota(idx)}
+                                      className="p-1 text-slate-400 hover:text-rose-600 rounded cursor-pointer"
+                                      title="Remover item"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex justify-end gap-2">
