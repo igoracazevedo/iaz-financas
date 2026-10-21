@@ -585,6 +585,13 @@ export default function App() {
   const qrVideoRef = React.useRef(null);
   const qrStreamRef = React.useRef(null);
 
+  // Menu recolhido de opções de importação na tela de Notas ('FOTO_ARQUIVO' | 'QR_CHAVE' | 'LOTE' | null)
+  const [metodoImportacaoAtivo, setMetodoImportacaoAtivo] = useState(null);
+
+  // Filtros de Ano e Mês para o Histórico de Notas e Cupons Fiscais (por padrão traz todas as notas)
+  const [filtroHistoricoNotaAno, setFiltroHistoricoNotaAno] = useState('TODOS');
+  const [filtroHistoricoNotaMes, setFiltroHistoricoNotaMes] = useState('TODOS');
+
   // Estados para Correção Rápida de Data em Lote no Histórico de Notas
   const [selectedNotasIds, setSelectedNotasIds] = useState([]);
   const [bulkNewDate, setBulkNewDate] = useState('');
@@ -896,6 +903,33 @@ export default function App() {
       (nf.data_emissao || '').startsWith(selectedMonth)
     );
   }, [notasFiscais, selectedMonth]);
+
+  const anosDisponiveisNotas = useMemo(() => {
+    const anosSet = new Set();
+    const anoAtual = String(new Date().getFullYear());
+    anosSet.add(anoAtual);
+    for (const nf of notasFiscais) {
+      const dataIso = (nf.data_emissao || '').split('T')[0];
+      if (/^\d{4}-\d{2}/.test(dataIso)) {
+        anosSet.add(dataIso.slice(0, 4));
+      }
+    }
+    return Array.from(anosSet).sort((a, b) => b.localeCompare(a));
+  }, [notasFiscais]);
+
+  const notasHistoricoFiltradas = useMemo(() => {
+    return notasFiscais.filter((nf) => {
+      const dataIso = (nf.data_emissao || '').split('T')[0];
+      const [ano, mes] = dataIso.split('-');
+      if (filtroHistoricoNotaAno !== 'TODOS' && ano !== filtroHistoricoNotaAno) {
+        return false;
+      }
+      if (filtroHistoricoNotaMes !== 'TODOS' && mes !== filtroHistoricoNotaMes) {
+        return false;
+      }
+      return true;
+    });
+  }, [notasFiscais, filtroHistoricoNotaAno, filtroHistoricoNotaMes]);
 
   const resumoMensal = useMemo(() => {
     const totalBrutoNotasMes = notasDoMes.reduce(
@@ -1719,9 +1753,11 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
             }))
           : [],
       });
+      setMetodoImportacaoAtivo(null);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
 
       showNotice(
-        `Nota lida pela IA! Data identificada: ${formatDateBR(dataReal)}. Revise abaixo.`
+        `Nota lida pela IA! Data identificada: ${formatDateBR(dataReal)}. Revise no topo da tela.`
       );
     } catch (err) {
       console.error('Erro na leitura OCR via Gemini:', err);
@@ -1762,6 +1798,7 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
       status_pagamento: transacaoVinculada?.status || 'CONFIRMADO',
       itens: itensDaNota,
     });
+    setMetodoImportacaoAtivo(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -2449,7 +2486,9 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
         status_pagamento: 'CONFIRMADO',
         itens: Array.isArray(parsed.itens) ? parsed.itens : [],
       });
-      showNotice('Dados do QR Code / Chave lidos pela IA! Revise abaixo.');
+      setMetodoImportacaoAtivo(null);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      showNotice('Dados do QR Code / Chave lidos pela IA! Revise no topo da tela.');
     } catch (err) {
       showNotice(`Erro ao ler QR Code: ${err.message}`, 'error');
     } finally {
@@ -2556,10 +2595,12 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
           status_pagamento: 'CONFIRMADO',
           itens: Array.isArray(parsed.itens) ? parsed.itens : [],
         });
+        setMetodoImportacaoAtivo(null);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
         showNotice(
           `Nota e ${
             (parsed.itens || []).length
-          } item(ns) extraídos com a data preservada (${formatDateBR(dataFinal)})!`
+          } item(ns) extraídos com a data preservada (${formatDateBR(dataFinal)})! Revise no topo.`
         );
       } else {
         // Preenche com todos os dados extraídos da Chave de 44 dígitos + CNPJ BrasilAPI
@@ -2595,10 +2636,12 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
                 ]
               : [],
         });
+        setMetodoImportacaoAtivo(null);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
         showNotice(
           `Chave decodificada! Loja: ${
             nomeEstabelecimento || cnpjFormatado
-          } • Data preservada: ${formatDateBR(dataPelaChave)}. Revise abaixo!`
+          } • Data preservada: ${formatDateBR(dataPelaChave)}. Revise no topo!`
         );
       }
     } catch (err) {
@@ -3861,513 +3904,17 @@ ${JSON.stringify(itensDaNota)}`,
           ========================================== */}
           {activeTab === 'notas' && (
             <div className="space-y-6">
-              <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-2xs">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div>
-                    <div className="inline-flex items-center gap-2 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full mb-2">
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span>OCR Inteligente com Gemini 3.8 Flash</span>
-                    </div>
-                    <h3 className="text-lg font-bold text-slate-900">
-                      Escanear Nota ou Cupom Fiscal (Mercado, Farmácia & Eletrônicos)
-                    </h3>
-                    <p className="text-sm text-slate-500 mt-0.5">
-                      Tire uma foto ou escolha um arquivo. Para eletrônicos, defina o tempo de garantia em meses para acompanhar o vencimento.
-                    </p>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
-                    <label className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm shadow-xs cursor-pointer transition">
-                      {ocrLoading ? (
-                        <>
-                          <Loader2 className="w-5 h-5 animate-spin" />
-                          <span>Processando IA...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Camera className="w-5 h-5" />
-                          <span>Tirar Foto</span>
-                        </>
-                      )}
-                      <input
-                        type="file"
-                        accept="image/*"
-                        capture="environment"
-                        onChange={handleFileUpload}
-                        disabled={ocrLoading}
-                        className="hidden"
-                      />
-                    </label>
-
-                    <label className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold text-sm shadow-xs cursor-pointer transition">
-                      {ocrLoading ? (
-                        <>
-                          <Loader2 className="w-5 h-5 animate-spin" />
-                          <span>Aguarde...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Upload className="w-5 h-5" />
-                          <span>Escolher Arquivo / Galeria</span>
-                        </>
-                      )}
-                      <input
-                        type="file"
-                        accept="image/*,application/pdf,.xml,text/xml,application/xml"
-                        onChange={handleFileUpload}
-                        disabled={ocrLoading}
-                        className="hidden"
-                      />
-                    </label>
-                  </div>
-                </div>
-
-                {/* ==========================================
-                    SEÇÃO DE IMPORTAÇÃO POR QR CODE OU CHAVE DE ACESSO (44 DÍGITOS)
-                ========================================== */}
-                <div className="mt-6 pt-6 border-t border-slate-200 space-y-4">
-                  <div className="bg-emerald-50/50 border border-emerald-200 rounded-2xl p-5 space-y-4">
-                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                      <div>
-                        <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full mb-1.5">
-                          <QrCode className="w-3.5 h-3.5" />
-                          <span>Leitor de QR Code & Decodificador de Chave de Acesso (44 dígitos)</span>
-                        </div>
-                        <h4 className="text-base font-bold text-slate-900">
-                          Importar Nota Fiscal via QR Code ou Chave de Acesso SEFAZ
-                        </h4>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          Escaneie o QR Code da nota ou digite/cole os 44 dígitos da Chave de Acesso. O sistema extrai automaticamente o <strong>Ano e Mês real da compra</strong> (dígitos 3 a 6 da chave), o <strong>CNPJ</strong> e consulta a loja na Receita Federal!
-                        </p>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-2 shrink-0">
-                        {!qrCameraActive ? (
-                          <button
-                            type="button"
-                            onClick={startQrCamera}
-                            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs shadow-xs cursor-pointer transition"
-                          >
-                            <QrCode className="w-4 h-4" />
-                            <span>Ler QR Code (Câmera)</span>
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={stopQrCamera}
-                            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs shadow-xs cursor-pointer transition"
-                          >
-                            <X className="w-4 h-4" />
-                            <span>Fechar Câmera QR</span>
-                          </button>
-                        )}
-
-                        <label className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-800 font-semibold text-xs cursor-pointer transition">
-                          <Upload className="w-4 h-4" />
-                          <span>Ler QR de Imagem</span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            onChange={handleQrImageUpload}
-                            className="hidden"
-                          />
-                        </label>
-                      </div>
-                    </div>
-
-                    {qrCameraActive && (
-                      <div className="bg-slate-900 rounded-xl p-3 flex flex-col items-center justify-center">
-                        <video
-                          ref={qrVideoRef}
-                          autoPlay
-                          playsInline
-                          muted
-                          className="w-full max-w-sm rounded-lg overflow-hidden"
-                        />
-                        <p className="text-xs text-slate-300 mt-2">
-                          Aponte a câmera para o QR Code impresso no cupom fiscal...
-                        </p>
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
-                      <div className="md:col-span-6">
-                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                          Chave de Acesso (44 dígitos) ou Link/URL do QR Code SEFAZ
-                        </label>
-                        <div className="relative">
-                          <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                          <input
-                            type="text"
-                            placeholder="Cole os 44 números da chave ou URL do QR Code..."
-                            value={qrChaveInput}
-                            onChange={(e) => setQrChaveInput(e.target.value)}
-                            className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs bg-white font-mono text-slate-800"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="md:col-span-3">
-                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                          Dia da Compra (se não vier no QR)
-                        </label>
-                        <input
-                          type="number"
-                          min="1"
-                          max="31"
-                          placeholder="Ex: 15"
-                          value={qrDiaCompra}
-                          onChange={(e) => setQrDiaCompra(e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white text-slate-800"
-                        />
-                      </div>
-
-                      <div className="md:col-span-3">
-                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                          Valor Total R$ (Opcional)
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0,00"
-                          value={qrValorManual}
-                          onChange={(e) => setQrValorManual(e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white text-slate-800"
-                        />
-                      </div>
-                    </div>
-
-                    {/* PREVIEW AUTOMÁTICO DA CHAVE DECODIFICADA */}
-                    {infoQrDecodificada?.valida && (
-                      <div className="bg-white rounded-xl border border-emerald-200 p-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 font-bold">
-                            <CheckCircle2 className="w-3.5 h-3.5" /> Chave 44 dígitos identificada!
-                          </span>
-                          {infoQrDecodificada.uf && (
-                            <span className="px-2 py-1 rounded bg-slate-100 text-slate-700 font-semibold">
-                              UF: {infoQrDecodificada.uf}
-                            </span>
-                          )}
-                          {infoQrDecodificada.anoMes && (
-                            <span className="px-2 py-1 rounded bg-indigo-50 text-indigo-700 font-bold">
-                              📅 Emissão na Chave: {infoQrDecodificada.anoMes.split('-')[1]}/{infoQrDecodificada.anoMes.split('-')[0]}
-                            </span>
-                          )}
-                          {infoQrDecodificada.cnpjFormatado && (
-                            <span className="px-2 py-1 rounded bg-slate-100 text-slate-700 font-mono">
-                              CNPJ: {infoQrDecodificada.cnpjFormatado}
-                            </span>
-                          )}
-                        </div>
-
-                        {infoQrDecodificada.urlConsultaSefaz && (
-                          <a
-                            href={infoQrDecodificada.urlConsultaSefaz}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-emerald-700 hover:underline font-semibold"
-                          >
-                            <ExternalLink className="w-3.5 h-3.5" />
-                            <span>Abrir Portal SEFAZ ({infoQrDecodificada.uf || 'NFC-e'})</span>
-                          </a>
-                        )}
-                      </div>
-                    )}
-
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-end justify-between gap-3">
-                      <div className="flex-1">
-                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                          Texto Copiado da Consulta SEFAZ (Opcional — cole aqui os itens da página da SEFAZ para extrair tudo sem foto)
-                        </label>
-                        <textarea
-                          rows={2}
-                          placeholder="Dica: se abrir a nota no site da SEFAZ, você pode copiar o texto da tela e colar aqui para a IA extrair todos os itens e a data exata!"
-                          value={qrTextoSefaz}
-                          onChange={(e) => setQrTextoSefaz(e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white text-slate-800"
-                        />
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={handleImportarPorChaveOuQrCode}
-                        disabled={qrLoading || (!qrChaveInput.trim() && !qrTextoSefaz.trim())}
-                        className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-semibold text-xs shadow-xs cursor-pointer transition shrink-0"
-                      >
-                        {qrLoading ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            <span>Consultando Chave...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="w-4 h-4 text-emerald-400" />
-                            <span>Carregar Dados da Chave / QR Code</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* ==========================================
-                    SEÇÃO DE IMPORTAÇÃO DE NOTAS FISCAIS EM LOTE (50+ ARQUIVOS)
-                ========================================== */}
-                <div className="mt-6 pt-6 border-t border-slate-200 space-y-4">
-                  <div className="bg-indigo-50/60 border border-indigo-200 rounded-2xl p-5 space-y-4">
-                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                      <div>
-                        <div className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-700 bg-indigo-100 px-2.5 py-1 rounded-full mb-1.5">
-                          <Sparkles className="w-3.5 h-3.5" />
-                          <span>
-                            Super-Lote Anti-Bloqueio 429 (6 notas/chamada • Modelo ativo:{' '}
-                            {activeGeminiModel})
-                          </span>
-                        </div>
-                        <h4 className="text-base font-bold text-slate-900">
-                          Importar Múltiplas Notas Fiscais de Uma Vez (Ex: 50+ Notas)
-                        </h4>
-                        <p className="text-xs text-slate-600 mt-0.5">
-                          Preserva automaticamente a data real da compra (lendo o texto da nota, o Ano/Mês da Chave de 44 dígitos ou a data do arquivo) e alterna entre 6 modelos Gemini.
-                        </p>
-                      </div>
-
-                      <label
-                        className={`inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl font-bold text-sm shadow-sm transition shrink-0 ${
-                          batchProcessing
-                            ? 'bg-indigo-400 text-white cursor-not-allowed'
-                            : 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer'
-                        }`}
-                      >
-                        {batchProcessing ? (
-                          <>
-                            <Loader2 className="w-5 h-5 animate-spin" />
-                            <span>
-                              Importando ({batchSummary.concluidos}/{batchSummary.total})...
-                            </span>
-                          </>
-                        ) : (
-                          <>
-                            <Upload className="w-5 h-5" />
-                            <span>Selecionar Notas em Lote (Múltiplos Arquivos)</span>
-                          </>
-                        )}
-                        <input
-                          type="file"
-                          multiple
-                          accept="image/*,application/pdf,.xml,text/xml,application/xml"
-                          onChange={handleBatchFilesUpload}
-                          disabled={batchProcessing}
-                          className="hidden"
-                        />
-                      </label>
-                    </div>
-
-                    {/* OPÇÕES DO LOTE */}
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-indigo-200/60">
-                      <div>
-                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                          Categoria das Notas do Lote
-                        </label>
-                        <select
-                          value={batchCategoryOverride}
-                          onChange={(e) => setBatchCategoryOverride(e.target.value)}
-                          disabled={batchProcessing}
-                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white font-medium text-slate-800"
-                        >
-                          <option value="AUTO">
-                            Detectar Automaticamente via IA (Supermercado / Farmácia / etc.)
-                          </option>
-                          <option value="Alimentação & Supermercado">
-                            Forçar Todas como: Alimentação & Supermercado
-                          </option>
-                          <option value="Saúde & Farmácia">
-                            Forçar Todas como: Saúde & Farmácia
-                          </option>
-                          {CATEGORIAS_DESPESA.filter(
-                            (c) =>
-                              c !== 'Alimentação & Supermercado' &&
-                              c !== 'Saúde & Farmácia'
-                          ).map((cat) => (
-                            <option key={cat} value={cat}>
-                              Forçar Todas como: {cat}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                          Data Fixa p/ Lote (Opcional - caso print não mostre data)
-                        </label>
-                        <input
-                          type="date"
-                          value={batchDateOverride}
-                          onChange={(e) => setBatchDateOverride(e.target.value)}
-                          disabled={batchProcessing}
-                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white font-medium text-slate-800"
-                        />
-                      </div>
-
-                      <div className="flex items-end">
-                        <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 px-3 py-2 rounded-xl cursor-pointer w-full">
-                          <input
-                            type="checkbox"
-                            checked={batchSkipDuplicates}
-                            onChange={(e) => setBatchSkipDuplicates(e.target.checked)}
-                            disabled={batchProcessing}
-                            className="rounded text-indigo-600"
-                          />
-                          <span>Ignorar notas duplicadas (mesma chave)</span>
-                        </label>
-                      </div>
-                    </div>
-
-                    {/* PAINEL DE PROGRESSO E FILA DO LOTE */}
-                    {batchQueue.length > 0 && (
-                      <div className="bg-white rounded-xl border border-indigo-200 p-4 space-y-3">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="space-y-0.5">
-                            <p className="text-xs font-bold text-slate-900">
-                              Progresso do Lote: {batchSummary.concluidos} de{' '}
-                              {batchSummary.total} arquivo(s) processado(s) (
-                              {batchSummary.percentual}%)
-                            </p>
-                            <p className="text-[11px] text-slate-500">
-                              ✅ <strong>{batchSummary.sucesso}</strong> salva(s) • 📦{' '}
-                              <strong>{batchSummary.totalItensImportados}</strong> itens
-                              extraídos • 💰 Total importado:{' '}
-                              <strong>
-                                {formatCurrency(batchSummary.valorTotalImportado)}
-                              </strong>
-                              {batchSummary.duplicadas > 0 &&
-                                ` • ⚠️ ${batchSummary.duplicadas} duplicada(s)`}
-                              {batchSummary.erro > 0 &&
-                                ` • ❌ ${batchSummary.erro} com erro`}
-                            </p>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            {batchSummary.erro > 0 && !batchProcessing && (
-                              <button
-                                type="button"
-                                onClick={handleRetryFailedBatch}
-                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold cursor-pointer"
-                              >
-                                <RefreshCw className="w-3.5 h-3.5" />
-                                <span>Reprocessar Falhas ({batchSummary.erro})</span>
-                              </button>
-                            )}
-                            {!batchProcessing && (
-                              <button
-                                type="button"
-                                onClick={() => setBatchQueue([])}
-                                className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer"
-                              >
-                                Limpar Fila
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* BARRA DE PROGRESSO */}
-                        <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-indigo-600 transition-all duration-300 rounded-full"
-                            style={{ width: `${batchSummary.percentual}%` }}
-                          />
-                        </div>
-
-                        {/* LISTA DE ARQUIVOS DO LOTE */}
-                        <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-lg">
-                          {batchQueue.map((item, idx) => (
-                            <div
-                              key={item.id}
-                              className="p-2.5 px-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
-                            >
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span className="text-slate-400 font-mono text-[11px] w-6 shrink-0">
-                                  #{idx + 1}
-                                </span>
-                                {item.status === 'PROCESSANDO' && (
-                                  <Loader2 className="w-4 h-4 text-indigo-600 animate-spin shrink-0" />
-                                )}
-                                {item.status === 'SUCESSO' && (
-                                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                                )}
-                                {item.status === 'DUPLICADA' && (
-                                  <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
-                                )}
-                                {item.status === 'ERRO' && (
-                                  <XCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                                )}
-                                {item.status === 'PENDENTE' && (
-                                  <Clock className="w-4 h-4 text-slate-400 shrink-0" />
-                                )}
-                                <div className="min-w-0">
-                                  <p className="font-semibold text-slate-800 truncate">
-                                    {item.fileName}{' '}
-                                    <span className="font-normal text-slate-400">
-                                      ({item.fileSizeKB} KB)
-                                    </span>
-                                  </p>
-                                  {item.status === 'SUCESSO' && (
-                                    <p className="text-[11px] text-emerald-700 truncate">
-                                      {item.estabelecimento} •{' '}
-                                      {formatDateBR(item.data_emissao)} •{' '}
-                                      <strong>{formatCurrency(item.valor_total)}</strong> •{' '}
-                                      {item.qtd_itens} itens • {item.categoria}
-                                    </p>
-                                  )}
-                                  {item.status === 'DUPLICADA' && (
-                                    <p className="text-[11px] text-amber-700 truncate">
-                                      Nota já existente no banco ({item.estabelecimento}) — ignorada
-                                    </p>
-                                  )}
-                                  {item.status === 'ERRO' && (
-                                    <p className="text-[11px] text-rose-600 truncate">
-                                      Erro: {item.errorMsg}
-                                    </p>
-                                  )}
-                                </div>
-                              </div>
-
-                              <span
-                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase shrink-0 self-start sm:self-center ${
-                                  item.status === 'SUCESSO'
-                                    ? 'bg-emerald-50 text-emerald-700'
-                                    : item.status === 'PROCESSANDO'
-                                    ? 'bg-indigo-50 text-indigo-700'
-                                    : item.status === 'DUPLICADA'
-                                    ? 'bg-amber-50 text-amber-700'
-                                    : item.status === 'ERRO'
-                                    ? 'bg-rose-50 text-rose-700'
-                                    : 'bg-slate-100 text-slate-500'
-                                }`}
-                              >
-                                {item.status}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {extractedNota && (
-                  <form
-                    onSubmit={handleConfirmAndSaveNota}
-                    className="mt-6 pt-6 border-t border-slate-200 space-y-5"
-                  >
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-bold text-slate-900 flex items-center gap-2">
-                        <FileText className="w-4 h-4 text-emerald-600" />
+              {/* 1. DADOS DA NOTA PARA EDIÇÃO E CONFIRMAÇÃO (SEMPRE NO TOPO ACIMA DA IMPORTAÇÃO) */}
+              {extractedNota && (
+                <div className="bg-white rounded-2xl border-2 border-emerald-500 p-5 sm:p-6 shadow-md">
+                  <form onSubmit={handleConfirmAndSaveNota} className="space-y-5">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                      <h4 className="font-bold text-slate-900 flex items-center gap-2 text-base">
+                        <FileText className="w-5 h-5 text-emerald-600" />
                         <span>
                           {extractedNota.id
                             ? `Editando Nota Fiscal: ${extractedNota.estabelecimento}`
-                            : 'Revisão dos Dados Extraídos'}
+                            : 'Revisão e Confirmação da Nota Importada'}
                         </span>
                       </h4>
                       <button
@@ -4376,7 +3923,7 @@ ${JSON.stringify(itensDaNota)}`,
                           setExtractedNota(null);
                           setPreviewImage(null);
                         }}
-                        className="text-xs text-slate-500 hover:text-rose-600 flex items-center gap-1 cursor-pointer"
+                        className="text-xs font-semibold text-slate-500 hover:text-rose-600 flex items-center gap-1 px-2.5 py-1.5 rounded-lg hover:bg-rose-50 cursor-pointer"
                       >
                         <X className="w-4 h-4" /> Cancelar
                       </button>
@@ -4713,11 +4260,21 @@ ${JSON.stringify(itensDaNota)}`,
                       </div>
                     </div>
 
-                    <div className="flex justify-end">
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExtractedNota(null);
+                          setPreviewImage(null);
+                        }}
+                        className="px-4 py-3 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
                       <button
                         type="submit"
                         disabled={ocrLoading}
-                        className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold text-sm shadow-sm cursor-pointer"
+                        className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm shadow-sm cursor-pointer"
                       >
                         <Check className="w-4 h-4" />
                         <span>
@@ -4728,9 +4285,616 @@ ${JSON.stringify(itensDaNota)}`,
                       </button>
                     </div>
                   </form>
+                </div>
+              )}
+
+              {/* 2. MENU RECOLHIDO DE OPÇÕES DE IMPORTAÇÃO DE NOTAS FISCAIS */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900">
+                      Importar Nota ou Cupom Fiscal
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Escolha abaixo a forma de importação desejada (clique para abrir ou recolher):
+                    </p>
+                  </div>
+                  {metodoImportacaoAtivo && (
+                    <button
+                      type="button"
+                      onClick={() => setMetodoImportacaoAtivo(null)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 cursor-pointer shrink-0"
+                    >
+                      <ChevronUp className="w-3.5 h-3.5" />
+                      <span>Recolher</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* BOTÕES EM FORMA DE MENU (RECOLHIDOS POR PADRÃO) */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setMetodoImportacaoAtivo((prev) =>
+                        prev === 'FOTO_ARQUIVO' ? null : 'FOTO_ARQUIVO'
+                      )
+                    }
+                    className={`flex items-center justify-between p-3.5 rounded-xl border text-left transition cursor-pointer ${
+                      metodoImportacaoAtivo === 'FOTO_ARQUIVO'
+                        ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-500/20'
+                        : 'bg-slate-50/70 hover:bg-slate-100/80 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                        <Camera className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-bold text-slate-900 text-xs sm:text-sm truncate">
+                          Foto ou Arquivo
+                        </p>
+                        <p className="text-[11px] text-slate-500 truncate">
+                          Câmera, imagem, PDF ou XML
+                        </p>
+                      </div>
+                    </div>
+                    {metodoImportacaoAtivo === 'FOTO_ARQUIVO' ? (
+                      <ChevronUp className="w-4 h-4 text-emerald-700 shrink-0" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setMetodoImportacaoAtivo((prev) =>
+                        prev === 'QR_CHAVE' ? null : 'QR_CHAVE'
+                      )
+                    }
+                    className={`flex items-center justify-between p-3.5 rounded-xl border text-left transition cursor-pointer ${
+                      metodoImportacaoAtivo === 'QR_CHAVE'
+                        ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-500/20'
+                        : 'bg-slate-50/70 hover:bg-slate-100/80 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-teal-600 text-white flex items-center justify-center shrink-0">
+                        <QrCode className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-bold text-slate-900 text-xs sm:text-sm truncate">
+                          QR Code ou Chave
+                        </p>
+                        <p className="text-[11px] text-slate-500 truncate">
+                          Leitor QR ou 44 dígitos SEFAZ
+                        </p>
+                      </div>
+                    </div>
+                    {metodoImportacaoAtivo === 'QR_CHAVE' ? (
+                      <ChevronUp className="w-4 h-4 text-emerald-700 shrink-0" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setMetodoImportacaoAtivo((prev) => (prev === 'LOTE' ? null : 'LOTE'))
+                    }
+                    className={`flex items-center justify-between p-3.5 rounded-xl border text-left transition cursor-pointer ${
+                      metodoImportacaoAtivo === 'LOTE'
+                        ? 'bg-indigo-50 border-indigo-500 ring-2 ring-indigo-500/20'
+                        : 'bg-slate-50/70 hover:bg-slate-100/80 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                        <Upload className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-bold text-slate-900 text-xs sm:text-sm truncate">
+                          Importar em Lote
+                        </p>
+                        <p className="text-[11px] text-slate-500 truncate">
+                          Múltiplas notas de uma vez
+                        </p>
+                      </div>
+                    </div>
+                    {metodoImportacaoAtivo === 'LOTE' ? (
+                      <ChevronUp className="w-4 h-4 text-indigo-700 shrink-0" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+                    )}
+                  </button>
+                </div>
+
+                {/* OPÇÃO 1 EXPANDIDA: FOTO OU ARQUIVO INDIVIDUAL */}
+                {metodoImportacaoAtivo === 'FOTO_ARQUIVO' && (
+                  <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                      <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full mb-1.5">
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>OCR Inteligente com Gemini</span>
+                      </div>
+                      <h4 className="text-sm font-bold text-slate-900">
+                        Escanear Foto ou Arquivo da Nota Fiscal
+                      </h4>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Tire uma foto ou selecione uma imagem, PDF ou XML. Após a leitura, os dados aparecerão logo acima para revisão.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
+                      <label className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm shadow-xs cursor-pointer transition">
+                        {ocrLoading ? (
+                          <>
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                            <span>Processando IA...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Camera className="w-5 h-5" />
+                            <span>Tirar Foto</span>
+                          </>
+                        )}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          onChange={handleFileUpload}
+                          disabled={ocrLoading}
+                          className="hidden"
+                        />
+                      </label>
+
+                      <label className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold text-sm shadow-xs cursor-pointer transition">
+                        {ocrLoading ? (
+                          <>
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                            <span>Aguarde...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-5 h-5" />
+                            <span>Escolher Arquivo / Galeria</span>
+                          </>
+                        )}
+                        <input
+                          type="file"
+                          accept="image/*,application/pdf,.xml,text/xml,application/xml"
+                          onChange={handleFileUpload}
+                          disabled={ocrLoading}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {/* OPÇÃO 2 EXPANDIDA: QR CODE OU CHAVE DE ACESSO (44 DÍGITOS) */}
+                {metodoImportacaoAtivo === 'QR_CHAVE' && (
+                  <div className="pt-4 border-t border-slate-100">
+                    <div className="bg-emerald-50/50 border border-emerald-200 rounded-2xl p-4 sm:p-5 space-y-4">
+                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                        <div>
+                          <div className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-full mb-1.5">
+                            <QrCode className="w-3.5 h-3.5" />
+                            <span>Leitor de QR Code & Chave de Acesso (44 dígitos)</span>
+                          </div>
+                          <h4 className="text-sm font-bold text-slate-900">
+                            Importar Nota Fiscal via QR Code ou Chave de Acesso SEFAZ
+                          </h4>
+                          <p className="text-xs text-slate-600 mt-0.5">
+                            Escaneie o QR Code da nota ou digite/cole os 44 dígitos da Chave de Acesso. Extrai automaticamente o <strong>Ano e Mês real da compra</strong> e o <strong>CNPJ</strong>.
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          {!qrCameraActive ? (
+                            <button
+                              type="button"
+                              onClick={startQrCamera}
+                              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs shadow-xs cursor-pointer transition"
+                            >
+                              <QrCode className="w-4 h-4" />
+                              <span>Ler QR Code (Câmera)</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={stopQrCamera}
+                              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs shadow-xs cursor-pointer transition"
+                            >
+                              <X className="w-4 h-4" />
+                              <span>Fechar Câmera QR</span>
+                            </button>
+                          )}
+
+                          <label className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-800 font-semibold text-xs cursor-pointer transition">
+                            <Upload className="w-4 h-4" />
+                            <span>Ler QR de Imagem</span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={handleQrImageUpload}
+                              className="hidden"
+                            />
+                          </label>
+                        </div>
+                      </div>
+
+                      {qrCameraActive && (
+                        <div className="bg-slate-900 rounded-xl p-3 flex flex-col items-center justify-center">
+                          <video
+                            ref={qrVideoRef}
+                            autoPlay
+                            playsInline
+                            muted
+                            className="w-full max-w-sm rounded-lg overflow-hidden"
+                          />
+                          <p className="text-xs text-slate-300 mt-2">
+                            Aponte a câmera para o QR Code impresso no cupom fiscal...
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                        <div className="md:col-span-6">
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Chave de Acesso (44 dígitos) ou Link/URL do QR Code SEFAZ
+                          </label>
+                          <div className="relative">
+                            <KeyRound className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                            <input
+                              type="text"
+                              placeholder="Cole os 44 números da chave ou URL do QR Code..."
+                              value={qrChaveInput}
+                              onChange={(e) => setQrChaveInput(e.target.value)}
+                              className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs bg-white font-mono text-slate-800"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="md:col-span-3">
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Dia da Compra (se não vier no QR)
+                          </label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="31"
+                            placeholder="Ex: 15"
+                            value={qrDiaCompra}
+                            onChange={(e) => setQrDiaCompra(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white text-slate-800"
+                          />
+                        </div>
+
+                        <div className="md:col-span-3">
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Valor Total R$ (Opcional)
+                          </label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            placeholder="0,00"
+                            value={qrValorManual}
+                            onChange={(e) => setQrValorManual(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white text-slate-800"
+                          />
+                        </div>
+                      </div>
+
+                      {infoQrDecodificada?.valida && (
+                        <div className="bg-white rounded-xl border border-emerald-200 p-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 font-bold">
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Chave 44 dígitos identificada!
+                            </span>
+                            {infoQrDecodificada.uf && (
+                              <span className="px-2 py-1 rounded bg-slate-100 text-slate-700 font-semibold">
+                                UF: {infoQrDecodificada.uf}
+                              </span>
+                            )}
+                            {infoQrDecodificada.anoMes && (
+                              <span className="px-2 py-1 rounded bg-indigo-50 text-indigo-700 font-bold">
+                                📅 Emissão na Chave: {infoQrDecodificada.anoMes.split('-')[1]}/{infoQrDecodificada.anoMes.split('-')[0]}
+                              </span>
+                            )}
+                            {infoQrDecodificada.cnpjFormatado && (
+                              <span className="px-2 py-1 rounded bg-slate-100 text-slate-700 font-mono">
+                                CNPJ: {infoQrDecodificada.cnpjFormatado}
+                              </span>
+                            )}
+                          </div>
+
+                          {infoQrDecodificada.urlConsultaSefaz && (
+                            <a
+                              href={infoQrDecodificada.urlConsultaSefaz}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-emerald-700 hover:underline font-semibold"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              <span>Abrir Portal SEFAZ ({infoQrDecodificada.uf || 'NFC-e'})</span>
+                            </a>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-end justify-between gap-3">
+                        <div className="flex-1">
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Texto Copiado da Consulta SEFAZ (Opcional — cole aqui os itens da página da SEFAZ)
+                          </label>
+                          <textarea
+                            rows={2}
+                            placeholder="Dica: se abrir a nota no site da SEFAZ, você pode copiar o texto da tela e colar aqui para a IA extrair todos os itens e a data exata!"
+                            value={qrTextoSefaz}
+                            onChange={(e) => setQrTextoSefaz(e.target.value)}
+                            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white text-slate-800"
+                          />
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleImportarPorChaveOuQrCode}
+                          disabled={qrLoading || (!qrChaveInput.trim() && !qrTextoSefaz.trim())}
+                          className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white font-semibold text-xs shadow-xs cursor-pointer transition shrink-0"
+                        >
+                          {qrLoading ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>Consultando Chave...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-4 h-4 text-emerald-400" />
+                              <span>Carregar Dados da Chave / QR Code</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* OPÇÃO 3 EXPANDIDA: IMPORTAÇÃO EM LOTE (50+ NOTAS) */}
+                {(metodoImportacaoAtivo === 'LOTE' || batchQueue.length > 0) && (
+                  <div className="pt-4 border-t border-slate-100">
+                    <div className="bg-indigo-50/60 border border-indigo-200 rounded-2xl p-4 sm:p-5 space-y-4">
+                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                        <div>
+                          <div className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-700 bg-indigo-100 px-2.5 py-1 rounded-full mb-1.5">
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>
+                              Super-Lote Anti-Bloqueio 429 (6 notas/chamada • Modelo ativo:{' '}
+                              {activeGeminiModel})
+                            </span>
+                          </div>
+                          <h4 className="text-sm font-bold text-slate-900">
+                            Importar Múltiplas Notas Fiscais de Uma Vez (Ex: 50+ Notas)
+                          </h4>
+                          <p className="text-xs text-slate-600 mt-0.5">
+                            Preserva automaticamente a data real da compra e salva direto no histórico.
+                          </p>
+                        </div>
+
+                        <label
+                          className={`inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-bold text-xs sm:text-sm shadow-sm transition shrink-0 ${
+                            batchProcessing
+                              ? 'bg-indigo-400 text-white cursor-not-allowed'
+                              : 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer'
+                          }`}
+                        >
+                          {batchProcessing ? (
+                            <>
+                              <Loader2 className="w-5 h-5 animate-spin" />
+                              <span>
+                                Importando ({batchSummary.concluidos}/{batchSummary.total})...
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="w-4 h-4" />
+                              <span>Selecionar Notas em Lote</span>
+                            </>
+                          )}
+                          <input
+                            type="file"
+                            multiple
+                            accept="image/*,application/pdf,.xml,text/xml,application/xml"
+                            onChange={handleBatchFilesUpload}
+                            disabled={batchProcessing}
+                            className="hidden"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-indigo-200/60">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Categoria das Notas do Lote
+                          </label>
+                          <select
+                            value={batchCategoryOverride}
+                            onChange={(e) => setBatchCategoryOverride(e.target.value)}
+                            disabled={batchProcessing}
+                            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white font-medium text-slate-800"
+                          >
+                            <option value="AUTO">
+                              Detectar Automaticamente via IA (Supermercado / Farmácia / etc.)
+                            </option>
+                            {CATEGORIAS_DESPESA.map((cat) => (
+                              <option key={cat} value={cat}>
+                                Forçar Todas como: {cat}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Data Fixa p/ Lote (Opcional - caso print não mostre data)
+                          </label>
+                          <input
+                            type="date"
+                            value={batchDateOverride}
+                            onChange={(e) => setBatchDateOverride(e.target.value)}
+                            disabled={batchProcessing}
+                            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white font-medium text-slate-800"
+                          />
+                        </div>
+
+                        <div className="flex items-end">
+                          <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 px-3 py-2 rounded-xl cursor-pointer w-full">
+                            <input
+                              type="checkbox"
+                              checked={batchSkipDuplicates}
+                              onChange={(e) => setBatchSkipDuplicates(e.target.checked)}
+                              disabled={batchProcessing}
+                              className="rounded text-indigo-600"
+                            />
+                            <span>Ignorar notas duplicadas (mesma chave)</span>
+                          </label>
+                        </div>
+                      </div>
+
+                      {batchQueue.length > 0 && (
+                        <div className="bg-white rounded-xl border border-indigo-200 p-4 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="space-y-0.5">
+                              <p className="text-xs font-bold text-slate-900">
+                                Progresso do Lote: {batchSummary.concluidos} de{' '}
+                                {batchSummary.total} arquivo(s) processado(s) (
+                                {batchSummary.percentual}%)
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                ✅ <strong>{batchSummary.sucesso}</strong> salva(s) • 📦{' '}
+                                <strong>{batchSummary.totalItensImportados}</strong> itens
+                                extraídos • 💰 Total importado:{' '}
+                                <strong>
+                                  {formatCurrency(batchSummary.valorTotalImportado)}
+                                </strong>
+                                {batchSummary.duplicadas > 0 &&
+                                  ` • ⚠️ ${batchSummary.duplicadas} duplicada(s)`}
+                                {batchSummary.erro > 0 &&
+                                  ` • ❌ ${batchSummary.erro} com erro`}
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              {batchSummary.erro > 0 && !batchProcessing && (
+                                <button
+                                  type="button"
+                                  onClick={handleRetryFailedBatch}
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold cursor-pointer"
+                                >
+                                  <RefreshCw className="w-3.5 h-3.5" />
+                                  <span>Reprocessar Falhas ({batchSummary.erro})</span>
+                                </button>
+                              )}
+                              {!batchProcessing && (
+                                <button
+                                  type="button"
+                                  onClick={() => setBatchQueue([])}
+                                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer"
+                                >
+                                  Limpar Fila
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-indigo-600 transition-all duration-300 rounded-full"
+                              style={{ width: `${batchSummary.percentual}%` }}
+                            />
+                          </div>
+
+                          <div className="max-h-64 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-lg">
+                            {batchQueue.map((item, idx) => (
+                              <div
+                                key={item.id}
+                                className="p-2.5 px-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-slate-400 font-mono text-[11px] w-6 shrink-0">
+                                    #{idx + 1}
+                                  </span>
+                                  {item.status === 'PROCESSANDO' && (
+                                    <Loader2 className="w-4 h-4 text-indigo-600 animate-spin shrink-0" />
+                                  )}
+                                  {item.status === 'SUCESSO' && (
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                                  )}
+                                  {item.status === 'DUPLICADA' && (
+                                    <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
+                                  )}
+                                  {item.status === 'ERRO' && (
+                                    <XCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                                  )}
+                                  {item.status === 'PENDENTE' && (
+                                    <Clock className="w-4 h-4 text-slate-400 shrink-0" />
+                                  )}
+                                  <div className="min-w-0">
+                                    <p className="font-semibold text-slate-800 truncate">
+                                      {item.fileName}{' '}
+                                      <span className="font-normal text-slate-400">
+                                        ({item.fileSizeKB} KB)
+                                      </span>
+                                    </p>
+                                    {item.status === 'SUCESSO' && (
+                                      <p className="text-[11px] text-emerald-700 truncate">
+                                        {item.estabelecimento} •{' '}
+                                        {formatDateBR(item.data_emissao)} •{' '}
+                                        <strong>{formatCurrency(item.valor_total)}</strong> •{' '}
+                                        {item.qtd_itens} itens • {item.categoria}
+                                      </p>
+                                    )}
+                                    {item.status === 'DUPLICADA' && (
+                                      <p className="text-[11px] text-amber-700 truncate">
+                                        Nota já existente no banco ({item.estabelecimento}) — ignorada
+                                      </p>
+                                    )}
+                                    {item.status === 'ERRO' && (
+                                      <p className="text-[11px] text-rose-600 truncate">
+                                        Erro: {item.errorMsg}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <span
+                                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase shrink-0 self-start sm:self-center ${
+                                    item.status === 'SUCESSO'
+                                      ? 'bg-emerald-50 text-emerald-700'
+                                      : item.status === 'PROCESSANDO'
+                                      ? 'bg-indigo-50 text-indigo-700'
+                                      : item.status === 'DUPLICADA'
+                                      ? 'bg-amber-50 text-amber-700'
+                                      : item.status === 'ERRO'
+                                      ? 'bg-rose-50 text-rose-700'
+                                      : 'bg-slate-100 text-slate-500'
+                                  }`}
+                                >
+                                  {item.status}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
 
+              {/* 3. SEPARAÇÃO: CONTROLE DE GARANTIA DE ELETRÔNICOS E PRODUTOS */}
               {itensEnriquecidos.some((i) => Number(i.garantia_meses) > 0) && (
                 <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs">
                   <div className="flex items-center justify-between mb-3">
@@ -4792,88 +4956,97 @@ ${JSON.stringify(itensDaNota)}`,
                 </div>
               )}
 
+              {/* 4. HISTÓRICO DE NOTAS E CUPONS FISCAIS (COM FILTRO DE ANO E MÊS, TRAZENDO TODAS POR PADRÃO) */}
               <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
-                <div className="p-5 border-b border-slate-100 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
                     <h3 className="font-semibold text-slate-900">
-                      Histórico de Notas e Cupons Fiscais ({notasFiscais.length})
+                      Histórico de Notas e Cupons Fiscais ({notasHistoricoFiltradas.length}
+                      {notasHistoricoFiltradas.length !== notasFiscais.length
+                        ? ` de ${notasFiscais.length}`
+                        : ''}
+                      )
                     </h3>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Você pode alterar a data de compra diretamente em cada nota ou selecionar várias notas abaixo para ajustar o mês/data em lote.
+                      Exibindo todas as notas por padrão. Filtre por ano ou mês se desejar.
                     </p>
                   </div>
 
-                  {/* BARRA DE AJUSTE RÁPIDO DE DATA EM LOTE */}
-                  <div className="flex flex-wrap items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (selectedNotasIds.length === notasFiscais.length) {
-                          setSelectedNotasIds([]);
-                        } else {
-                          setSelectedNotasIds(notasFiscais.map((n) => n.id));
-                        }
-                      }}
-                      className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-medium text-slate-700 hover:bg-slate-100 cursor-pointer"
-                    >
-                      {selectedNotasIds.length === notasFiscais.length && notasFiscais.length > 0
-                        ? 'Desmarcar Todas'
-                        : `Selecionar Todas (${selectedNotasIds.length})`}
-                    </button>
+                  {/* PEQUENO FILTRO DE ANO E MÊS */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5">
+                      <Filter className="w-3.5 h-3.5 text-slate-400" />
+                      <select
+                        value={filtroHistoricoNotaAno}
+                        onChange={(e) => setFiltroHistoricoNotaAno(e.target.value)}
+                        className="bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
+                        aria-label="Filtrar por Ano"
+                      >
+                        <option value="TODOS">Todos os anos</option>
+                        {anosDisponiveisNotas.map((ano) => (
+                          <option key={ano} value={ano}>
+                            Ano: {ano}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-                    <input
-                      type="date"
-                      value={bulkNewDate}
-                      onChange={(e) => setBulkNewDate(e.target.value)}
-                      className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-800"
-                    />
+                    <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                      <select
+                        value={filtroHistoricoNotaMes}
+                        onChange={(e) => setFiltroHistoricoNotaMes(e.target.value)}
+                        className="bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
+                        aria-label="Filtrar por Mês"
+                      >
+                        <option value="TODOS">Todos os meses</option>
+                        <option value="01">Janeiro</option>
+                        <option value="02">Fevereiro</option>
+                        <option value="03">Março</option>
+                        <option value="04">Abril</option>
+                        <option value="05">Maio</option>
+                        <option value="06">Junho</option>
+                        <option value="07">Julho</option>
+                        <option value="08">Agosto</option>
+                        <option value="09">Setembro</option>
+                        <option value="10">Outubro</option>
+                        <option value="11">Novembro</option>
+                        <option value="12">Dezembro</option>
+                      </select>
+                    </div>
 
-                    <button
-                      type="button"
-                      disabled={loading || selectedNotasIds.length === 0 || !bulkNewDate}
-                      onClick={handleBulkUpdateNotasDate}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-xs font-semibold cursor-pointer transition"
-                    >
-                      {loading ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Calendar className="w-3.5 h-3.5" />
-                      )}
-                      <span>Aplicar Data ({selectedNotasIds.length})</span>
-                    </button>
+                    {(filtroHistoricoNotaAno !== 'TODOS' ||
+                      filtroHistoricoNotaMes !== 'TODOS') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFiltroHistoricoNotaAno('TODOS');
+                          setFiltroHistoricoNotaMes('TODOS');
+                        }}
+                        className="px-2.5 py-1.5 rounded-xl border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-100 cursor-pointer"
+                      >
+                        Limpar filtro
+                      </button>
+                    )}
                   </div>
                 </div>
 
-                {notasFiscais.length === 0 ? (
+                {notasHistoricoFiltradas.length === 0 ? (
                   <div className="p-10 text-center text-slate-400 text-sm">
-                    Nenhuma nota fiscal escaneada até o momento.
+                    {notasFiscais.length === 0
+                      ? 'Nenhuma nota fiscal escaneada até o momento.'
+                      : 'Nenhuma nota fiscal encontrada para o ano/mês selecionado.'}
                   </div>
                 ) : (
                   <div className="divide-y divide-slate-100">
-                    {notasFiscais.map((nf) => {
+                    {notasHistoricoFiltradas.map((nf) => {
                       const itensDaNota = itensNota.filter((i) => i.nota_id === nf.id);
                       const isExpanded = expandedNotaId === nf.id;
-                      const isSelected = selectedNotasIds.includes(nf.id);
 
                       return (
                         <div key={nf.id} className="p-4 sm:px-6">
                           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                             <div className="flex items-start gap-3">
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={(e) => {
-                                  if (e.target.checked) {
-                                    setSelectedNotasIds((prev) => [...prev, nf.id]);
-                                  } else {
-                                    setSelectedNotasIds((prev) =>
-                                      prev.filter((id) => id !== nf.id)
-                                    );
-                                  }
-                                }}
-                                className="mt-3 w-4 h-4 rounded text-indigo-600 cursor-pointer shrink-0"
-                                title="Selecionar nota para alterar data em lote"
-                              />
                               <div className="p-2.5 rounded-xl bg-slate-100 text-slate-700 mt-0.5">
                                 <ShoppingBag className="w-5 h-5" />
                               </div>
