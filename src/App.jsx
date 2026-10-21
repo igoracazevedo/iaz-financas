@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenAI } from '@google/genai';
+import jsQR from 'jsqr';
 import {
   CreditCard,
   ArrowDownCircle,
@@ -2371,7 +2372,11 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
   const startQrCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
       });
       qrStreamRef.current = stream;
       setQrCameraActive(true);
@@ -2382,38 +2387,144 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
         }
       }, 150);
 
-      if ('BarcodeDetector' in window) {
-        const detector = new window.BarcodeDetector({
-          formats: ['qr_code', 'code_128', 'ean_13'],
-        });
-        const interval = setInterval(async () => {
-          if (!qrStreamRef.current || !qrVideoRef.current) {
-            clearInterval(interval);
-            return;
-          }
-          try {
-            const barcodes = await detector.detect(qrVideoRef.current);
-            if (barcodes && barcodes.length > 0) {
-              const rawValue = barcodes[0].rawValue;
-              if (rawValue) {
-                setQrChaveInput(rawValue);
-                clearInterval(interval);
-                stopQrCamera();
-                showNotice('QR Code / Código de Barras lido com sucesso!');
-              }
+      const detector =
+        'BarcodeDetector' in window
+          ? new window.BarcodeDetector({
+              formats: ['qr_code', 'code_128', 'ean_13'],
+            })
+          : null;
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+      const interval = setInterval(async () => {
+        if (!qrStreamRef.current || !qrVideoRef.current) {
+          clearInterval(interval);
+          return;
+        }
+        const video = qrVideoRef.current;
+        if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+          return;
+        }
+
+        try {
+          // 1. Tenta BarcodeDetector nativo se disponível
+          if (detector) {
+            const barcodes = await detector.detect(video);
+            if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+              setQrChaveInput(barcodes[0].rawValue);
+              clearInterval(interval);
+              stopQrCamera();
+              showNotice('QR Code / Código de Barras lido com sucesso!');
+              return;
             }
-          } catch {
-            // continua escaneando
           }
-        }, 450);
-      } else {
-        showNotice(
-          'Aponte a câmera ou use o botão "Foto do QR Code" para leitura via IA.',
-          'success'
-        );
-      }
+
+          // 2. Decodificador universal jsQR (funciona em 100% dos celulares Android / WebView)
+          if (ctx) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+              inversionAttempts: 'dontInvert',
+            });
+            if (code && code.data) {
+              setQrChaveInput(code.data);
+              clearInterval(interval);
+              stopQrCamera();
+              showNotice('QR Code da nota lido com sucesso pela câmera!');
+              return;
+            }
+          }
+        } catch {
+          // continua escaneando
+        }
+      }, 350);
     } catch (err) {
-      showNotice(`Não foi possível acessar a câmera: ${err.message}`, 'error');
+      showNotice(
+        `Não foi possível abrir a câmera ao vivo (${err.message}). Você também pode usar o botão "Tirar Foto do QR".`,
+        'error'
+      );
+    }
+  };
+
+  const handleCaptureFrameFromQrVideo = async () => {
+    if (!qrVideoRef.current || !qrVideoRef.current.videoWidth) {
+      return showNotice('Aguarde a imagem da câmera carregar.', 'error');
+    }
+    const video = qrVideoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Tenta jsQR primeiro no frame capturado
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const qr = jsQR(imgData.data, imgData.width, imgData.height);
+    if (qr && qr.data) {
+      setQrChaveInput(qr.data);
+      stopQrCamera();
+      showNotice('QR Code identificado na captura!');
+      return;
+    }
+
+    // Se o QR estiver amassado/ilegível, envia o frame capturado para o Gemini IA ler tudo
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    const base64Data = dataUrl.split(',')[1];
+    stopQrCamera();
+    setQrLoading(true);
+    try {
+      setPreviewImage(dataUrl);
+      const interaction = await callGeminiWithFallback({
+        input: [
+          {
+            type: 'image',
+            mime_type: 'image/jpeg',
+            data: base64Data,
+          },
+          {
+            type: 'text',
+            text: 'Extraia a Chave de Acesso de 44 dígitos (ou a URL do QR Code), o nome do estabelecimento, CNPJ, data de emissão (YYYY-MM-DD) e valor total desta imagem de Nota Fiscal / QR Code.',
+          },
+        ],
+        response_format: [
+          {
+            type: 'text',
+            mime_type: 'application/json',
+            schema: NOTA_JSON_SCHEMA,
+          },
+        ],
+      });
+      const parsed = JSON.parse(interaction.output_text || '{}');
+      if (parsed.chave_acesso) {
+        setQrChaveInput(parsed.chave_acesso);
+      }
+      const dataReal = resolverDataEmissaoReal(
+        parsed.data_emissao,
+        parsed.chave_acesso,
+        null
+      );
+      setExtractedNota({
+        estabelecimento: parsed.estabelecimento || 'Estabelecimento',
+        cnpj: parsed.cnpj || '',
+        data_emissao: dataReal,
+        valor_total: Number(parsed.valor_total) || 0,
+        desconto: Number(parsed.desconto) || 0,
+        forma_pagamento: parsed.forma_pagamento || 'PIX',
+        chave_acesso: parsed.chave_acesso || '',
+        categoria_geral: parsed.categoria_geral || CATEGORIAS_DESPESA[0],
+        cartao_id: '',
+        status_pagamento: 'CONFIRMADO',
+        itens: Array.isArray(parsed.itens) ? parsed.itens : [],
+      });
+      setMetodoImportacaoAtivo(null);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      showNotice('Dados capturados da câmera pela IA! Revise no topo da tela.');
+    } catch (err) {
+      showNotice(`Erro ao analisar captura: ${err.message}`, 'error');
+    } finally {
+      setQrLoading(false);
     }
   };
 
@@ -2422,10 +2533,10 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
     if (!file) return;
     setQrLoading(true);
     try {
-      // 1. Tenta BarcodeDetector nativo na imagem primeiro
-      if ('BarcodeDetector' in window) {
-        try {
-          const bitmap = await createImageBitmap(file);
+      // 1. Tenta BarcodeDetector nativo ou jsQR na imagem primeiro
+      try {
+        const bitmap = await createImageBitmap(file);
+        if ('BarcodeDetector' in window) {
           const detector = new window.BarcodeDetector({
             formats: ['qr_code', 'code_128'],
           });
@@ -2437,9 +2548,23 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
             e.target.value = '';
             return;
           }
-        } catch {
-          // Segue para leitura via Gemini IA
         }
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(bitmap, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const qr = jsQR(imageData.data, imageData.width, imageData.height);
+        if (qr && qr.data) {
+          setQrChaveInput(qr.data);
+          showNotice('QR Code extraído da foto com sucesso!');
+          setQrLoading(false);
+          e.target.value = '';
+          return;
+        }
+      } catch {
+        // Segue para leitura via Gemini IA
       }
 
       // 2. Usa Gemini IA para ler o QR Code / Chave de 44 dígitos e os dados da imagem
@@ -4517,9 +4642,21 @@ ${JSON.stringify(itensDaNota)}`,
                             </button>
                           )}
 
+                          <label className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-semibold text-xs shadow-xs cursor-pointer transition">
+                            <Camera className="w-4 h-4" />
+                            <span>Tirar Foto do QR</span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              capture="environment"
+                              onChange={handleQrImageUpload}
+                              className="hidden"
+                            />
+                          </label>
+
                           <label className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-emerald-300 hover:bg-emerald-50 text-emerald-800 font-semibold text-xs cursor-pointer transition">
                             <Upload className="w-4 h-4" />
-                            <span>Ler QR de Imagem</span>
+                            <span>Ler QR da Galeria</span>
                             <input
                               type="file"
                               accept="image/*"
@@ -4531,7 +4668,7 @@ ${JSON.stringify(itensDaNota)}`,
                       </div>
 
                       {qrCameraActive && (
-                        <div className="bg-slate-900 rounded-xl p-3 flex flex-col items-center justify-center">
+                        <div className="bg-slate-900 rounded-xl p-3 flex flex-col items-center justify-center gap-2.5">
                           <video
                             ref={qrVideoRef}
                             autoPlay
@@ -4539,9 +4676,19 @@ ${JSON.stringify(itensDaNota)}`,
                             muted
                             className="w-full max-w-sm rounded-lg overflow-hidden"
                           />
-                          <p className="text-xs text-slate-300 mt-2">
-                            Aponte a câmera para o QR Code impresso no cupom fiscal...
-                          </p>
+                          <div className="flex flex-col sm:flex-row items-center gap-2">
+                            <p className="text-xs text-slate-300">
+                              Aponte a câmera para o QR Code impresso no cupom fiscal...
+                            </p>
+                            <button
+                              type="button"
+                              onClick={handleCaptureFrameFromQrVideo}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer"
+                            >
+                              <Camera className="w-3.5 h-3.5" />
+                              <span>Capturar Agora</span>
+                            </button>
+                          </div>
                         </div>
                       )}
 
