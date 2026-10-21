@@ -50,6 +50,9 @@ import {
   ExternalLink,
   BarChart3,
   TrendingUp,
+  Tags,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 
 // ==========================================
@@ -85,9 +88,10 @@ const supabase =
     ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
     : null;
 
-const CATEGORIAS_DESPESA = [
+const CATEGORIAS_PADRAO = [
   'Alimentação & Supermercado',
   'Saúde & Farmácia',
+  'Pets',
   'Eletrônicos & Eletrodomésticos',
   'Moradia & Contas',
   'Transporte & Combustível',
@@ -98,6 +102,28 @@ const CATEGORIAS_DESPESA = [
   'Impostos & Taxas',
   'Outros',
 ];
+
+const normalizarListaCategorias = (listaSalva) => {
+  if (!Array.isArray(listaSalva) || listaSalva.length === 0) {
+    return [...CATEGORIAS_PADRAO];
+  }
+  const limpas = Array.from(
+    new Set(listaSalva.map((c) => String(c || '').trim()).filter(Boolean))
+  );
+  // Garante que a categoria Pets esteja presente caso a lista tenha sido salva antes da criação de Pets
+  if (!limpas.some((c) => c.toLowerCase() === 'pets')) {
+    const idxFarma = limpas.indexOf('Saúde & Farmácia');
+    if (idxFarma >= 0) {
+      limpas.splice(idxFarma + 1, 0, 'Pets');
+    } else {
+      limpas.push('Pets');
+    }
+  }
+  if (!limpas.includes('Outros')) {
+    limpas.push('Outros');
+  }
+  return limpas;
+};
 
 const FORMAS_PAGAMENTO = [
   'PIX',
@@ -437,6 +463,39 @@ export default function App() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
 
+  // ==========================================
+  // CATEGORIAS DINÂMICAS E EDITÁVEIS (INCLUINDO PETS)
+  // ==========================================
+  const [categoriasDespesa, setCategoriasDespesa] = useState(() => {
+    try {
+      const saved = localStorage.getItem('iaz_categorias_despesa');
+      if (saved) {
+        return normalizarListaCategorias(JSON.parse(saved));
+      }
+    } catch {
+      // fallback
+    }
+    return [...CATEGORIAS_PADRAO];
+  });
+  const [configCategoriasDbId, setConfigCategoriasDbId] = useState(null);
+  const [novaCategoriaInput, setNovaCategoriaInput] = useState('');
+  const [editandoCategoriaOriginal, setEditandoCategoriaOriginal] = useState(null);
+  const [editandoCategoriaNovoNome, setEditandoCategoriaNovoNome] = useState('');
+  const [atualizarHistoricoAoRenomear, setAtualizarHistoricoAoRenomear] = useState(true);
+
+  const CATEGORIAS_DESPESA = categoriasDespesa;
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'iaz_categorias_despesa',
+        JSON.stringify(categoriasDespesa)
+      );
+    } catch (e) {
+      console.error(e);
+    }
+  }, [categoriasDespesa]);
+
   // Estados das tabelas ativas
   const [cartoes, setCartoes] = useState([]);
   const [transacoes, setTransacoes] = useState([]);
@@ -726,7 +785,11 @@ export default function App() {
         supabase
           .from('contas_bancarias')
           .select('*')
-          .in('tipo_conta', ['__LISTA_SUPERMERCADO__', '__LISTA_FARMACIA__'])
+          .in('tipo_conta', [
+            '__LISTA_SUPERMERCADO__',
+            '__LISTA_FARMACIA__',
+            '__CONFIG_CATEGORIAS__',
+          ])
           .order('created_at', { ascending: false }),
       ]);
 
@@ -744,8 +807,25 @@ export default function App() {
       );
       setItensNota((itensData || []).map(decodeItemGarantia));
 
+      // Carrega configuração de categorias personalizadas salva no banco (sincroniza Web e APK)
+      const rowCategorias = (listasRawData || []).find(
+        (r) => r.tipo_conta === '__CONFIG_CATEGORIAS__'
+      );
+      if (rowCategorias) {
+        setConfigCategoriasDbId(rowCategorias.id);
+        try {
+          const parsedCats = JSON.parse(rowCategorias.nome_banco);
+          if (Array.isArray(parsedCats) && parsedCats.length > 0) {
+            setCategoriasDespesa(normalizarListaCategorias(parsedCats));
+          }
+        } catch {
+          // mantém lista atual
+        }
+      }
+
       // Decodifica o histórico de listas de compras salvo no banco
       const parsedListas = (listasRawData || [])
+        .filter((row) => row.tipo_conta !== '__CONFIG_CATEGORIAS__')
         .map((row) => {
           try {
             const obj = JSON.parse(row.nome_banco);
@@ -1462,7 +1542,7 @@ export default function App() {
   ) => {
     const promptInstrucao = `Analise esta Nota Fiscal / Cupom Fiscal brasileiro (NFC-e, NF-e, DANFE, XML, QR Code ou SAT) e extraia todos os dados estruturados.
 Classifique cada item e a categoria geral usando uma destas categorias: ${CATEGORIAS_DESPESA.join(', ')}.
-Dica importante: se for supermercado/atacarejo/hortifruti/padaria, use "Alimentação & Supermercado"; se for farmácia/drogaria/medicamentos/higiene, use "Saúde & Farmácia".
+Dica importante: se for supermercado/atacarejo/hortifruti/padaria, use "Alimentação & Supermercado"; se for farmácia/drogaria/medicamentos/higiene, use "Saúde & Farmácia"; se for pet shop/ração/veterinário/produtos para animais, use "Pets".
 ATENÇÃO MÁXIMA COM A DATA DE EMISSÃO (data_emissao):
 - Procure atentamente a data da compra/emissão/autorização impressa na nota (ex: DD/MM/AAAA no cabeçalho, rodapé, protocolo de autorização ou nos dígitos 3 a 6 AAMM da chave de acesso de 44 dígitos) e retorne no formato YYYY-MM-DD.
 - Se a imagem for um print parcial onde a data da compra NÃO está visível no texto da imagem, retorne data_emissao como "" (vazio) — NUNCA invente a data de hoje!
@@ -3110,8 +3190,239 @@ ${JSON.stringify(itensDaNota)}`,
   };
 
   // ==========================================
+  // GESTÃO E EDIÇÃO DE CATEGORIAS (COM SINCRONIZAÇÃO NO SUPABASE E ATUALIZAÇÃO DE HISTÓRICO)
+  // ==========================================
+  const salvarCategoriasNoBancoELocal = async (novaLista) => {
+    const listaFinal = Array.from(
+      new Set(novaLista.map((c) => String(c || '').trim()).filter(Boolean))
+    );
+    if (!listaFinal.includes('Outros')) {
+      listaFinal.push('Outros');
+    }
+    setCategoriasDespesa(listaFinal);
+
+    if (!supabase) return;
+    try {
+      if (configCategoriasDbId) {
+        await supabase
+          .from('contas_bancarias')
+          .update({
+            nome_banco: JSON.stringify(listaFinal),
+            tipo_conta: '__CONFIG_CATEGORIAS__',
+            saldo_inicial: 0,
+            ativo: false,
+          })
+          .eq('id', configCategoriasDbId);
+      } else {
+        const { data } = await supabase
+          .from('contas_bancarias')
+          .insert([
+            {
+              nome_banco: JSON.stringify(listaFinal),
+              tipo_conta: '__CONFIG_CATEGORIAS__',
+              saldo_inicial: 0,
+              ativo: false,
+            },
+          ])
+          .select()
+          .single();
+        if (data?.id) {
+          setConfigCategoriasDbId(data.id);
+        }
+      }
+    } catch (err) {
+      console.error('Erro ao sincronizar categorias no Supabase:', err);
+    }
+  };
+
+  const handleAddCategoria = async (e) => {
+    e.preventDefault();
+    const nova = novaCategoriaInput.trim();
+    if (!nova) return;
+    if (
+      categoriasDespesa.some((c) => c.toLowerCase() === nova.toLowerCase())
+    ) {
+      return showNotice(`A categoria "${nova}" já existe!`, 'error');
+    }
+
+    const novaLista = [...categoriasDespesa];
+    const idxOutros = novaLista.indexOf('Outros');
+    if (idxOutros >= 0) {
+      novaLista.splice(idxOutros, 0, nova);
+    } else {
+      novaLista.push(nova);
+    }
+
+    await salvarCategoriasNoBancoELocal(novaLista);
+    setNovaCategoriaInput('');
+    showNotice(`Categoria "${nova}" adicionada com sucesso!`);
+  };
+
+  const handleStartRenameCategoria = (cat) => {
+    setEditandoCategoriaOriginal(cat);
+    setEditandoCategoriaNovoNome(cat);
+  };
+
+  const handleSaveRenameCategoria = async (catOriginal) => {
+    const novoNome = editandoCategoriaNovoNome.trim();
+    if (!novoNome) return;
+    if (novoNome === catOriginal) {
+      setEditandoCategoriaOriginal(null);
+      return;
+    }
+
+    const novaLista = categoriasDespesa.map((c) =>
+      c === catOriginal ? novoNome : c
+    );
+    await salvarCategoriasNoBancoELocal(novaLista);
+
+    // Se marcado, atualiza os itens de notas e lançamentos que usavam o nome antigo da categoria
+    if (atualizarHistoricoAoRenomear && supabase) {
+      try {
+        const itensParaAtualizar = itensNota.filter(
+          (i) => i.categoria_item === catOriginal
+        );
+        for (const item of itensParaAtualizar) {
+          await supabase
+            .from('itens_nota')
+            .update({
+              categoria_item: encodeCategoriaComGarantia(
+                novoNome,
+                item.garantia_meses
+              ),
+            })
+            .eq('id', item.id);
+        }
+
+        await supabase
+          .from('transacoes')
+          .update({ categoria: novoNome })
+          .eq('categoria', catOriginal);
+
+        await fetchAllData();
+      } catch (err) {
+        console.error('Erro ao atualizar histórico da categoria renomeada:', err);
+      }
+    }
+
+    setEditandoCategoriaOriginal(null);
+    setEditandoCategoriaNovoNome('');
+    showNotice(
+      `Categoria "${catOriginal}" renomeada para "${novoNome}"${
+        atualizarHistoricoAoRenomear ? ' e histórico atualizado!' : '!'
+      }`
+    );
+  };
+
+  const handleDeleteCategoria = async (catParaExcluir) => {
+    const protegidas = [
+      'Alimentação & Supermercado',
+      'Saúde & Farmácia',
+      'Outros',
+    ];
+    if (protegidas.includes(catParaExcluir)) {
+      return showNotice(
+        `A categoria "${catParaExcluir}" é base do sistema (você pode renomear ou criar outras, mas não removê-la).`,
+        'error'
+      );
+    }
+
+    const novaLista = categoriasDespesa.filter((c) => c !== catParaExcluir);
+    await salvarCategoriasNoBancoELocal(novaLista);
+
+    // Reatribui itens/lançamentos que estavam nessa categoria para "Outros"
+    if (supabase) {
+      try {
+        const itensAfetados = itensNota.filter(
+          (i) => i.categoria_item === catParaExcluir
+        );
+        for (const item of itensAfetados) {
+          await supabase
+            .from('itens_nota')
+            .update({
+              categoria_item: encodeCategoriaComGarantia(
+                'Outros',
+                item.garantia_meses
+              ),
+            })
+            .eq('id', item.id);
+        }
+        await supabase
+          .from('transacoes')
+          .update({ categoria: 'Outros' })
+          .eq('categoria', catParaExcluir);
+        await fetchAllData();
+      } catch (err) {
+        console.error('Erro ao reatribuir itens da categoria excluída:', err);
+      }
+    }
+
+    showNotice(`Categoria "${catParaExcluir}" removida!`);
+  };
+
+  const handleMoveCategoria = async (index, direction) => {
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= categoriasDespesa.length) return;
+    const novaLista = [...categoriasDespesa];
+    const [movida] = novaLista.splice(index, 1);
+    novaLista.splice(targetIndex, 0, movida);
+    await salvarCategoriasNoBancoELocal(novaLista);
+  };
+
+  const handleRestoreDefaultCategorias = async () => {
+    const combinada = Array.from(
+      new Set([...CATEGORIAS_PADRAO, ...categoriasDespesa])
+    );
+    await salvarCategoriasNoBancoELocal(combinada);
+    showNotice('Categorias padrão (incluindo Pets) restauradas!');
+  };
+
+  // Resumo estatístico de cada categoria (quantos itens de nota, quantos lançamentos e valor total gasto)
+  const resumoUsoCategorias = useMemo(() => {
+    const mapa = new Map();
+    for (const cat of categoriasDespesa) {
+      mapa.set(cat, {
+        categoria: cat,
+        qtdItensNota: 0,
+        qtdTransacoes: 0,
+        valorTotalItens: 0,
+      });
+    }
+
+    for (const it of itensNota) {
+      const cat = it.categoria_item || 'Outros';
+      if (!mapa.has(cat)) {
+        mapa.set(cat, {
+          categoria: cat,
+          qtdItensNota: 0,
+          qtdTransacoes: 0,
+          valorTotalItens: 0,
+        });
+      }
+      const entry = mapa.get(cat);
+      entry.qtdItensNota += 1;
+      entry.valorTotalItens += Number(it.valor_total) || 0;
+    }
+
+    for (const t of transacoes) {
+      const cat = t.categoria || 'Outros';
+      if (!mapa.has(cat)) {
+        mapa.set(cat, {
+          categoria: cat,
+          qtdItensNota: 0,
+          qtdTransacoes: 0,
+          valorTotalItens: 0,
+        });
+      }
+      mapa.get(cat).qtdTransacoes += 1;
+    }
+
+    return Array.from(mapa.values());
+  }, [categoriasDespesa, itensNota, transacoes]);
+
+  // ==========================================
   // NAVEGAÇÃO PRINCIPAL:
-  // Resumo, Notas, Supermercado, Farmácia, Demais Itens, Busca e Estatísticas
+  // Resumo, Notas, Supermercado, Farmácia, Demais Itens, Busca, Estatísticas e Categorias
   // ==========================================
   const navItems = [
     { id: 'resumo', label: 'Resumo', icon: PieChart },
@@ -3121,6 +3432,7 @@ ${JSON.stringify(itensDaNota)}`,
     { id: 'demais', label: 'Demais Itens', icon: Package },
     { id: 'busca', label: 'Busca', icon: Search },
     { id: 'estatisticas', label: 'Estatísticas', icon: BarChart3 },
+    { id: 'categorias', label: 'Categorias', icon: Tags },
   ];
 
   // Itens para a aba "Demais Itens" (tudo que não é Supermercado nem Farmácia, ou filtrado)
@@ -6177,6 +6489,240 @@ ${JSON.stringify(itensDaNota)}`,
               </div>
             </div>
           )}
+
+          {/* ============================================================== */}
+          {/* ABA 8: GERENCIAR CATEGORIAS (INCLUINDO PETS) */}
+          {/* ============================================================== */}
+          {activeTab === 'categorias' && (
+            <div className="space-y-6">
+              {/* Cabeçalho e formulário de Nova Categoria */}
+              <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-5 space-y-5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                      <Tags className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h2 className="text-base font-bold text-slate-900">
+                        Gerenciar Categorias de Despesa
+                      </h2>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Adicione, edite o nome, reordene ou remova categorias. A categoria{' '}
+                        <strong className="text-indigo-600">Pets</strong> já está incluída e
+                        disponível em todas as telas e na IA!
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleRestoreDefaultCategorias}
+                    disabled={salvandoCategorias}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer shrink-0"
+                    title="Garantir que todas as categorias padrão (incluindo Pets) estejam presentes"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Restaurar Padrões</span>
+                  </button>
+                </div>
+
+                {/* Formulário para Adicionar Nova Categoria */}
+                <form
+                  onSubmit={handleAddCategoria}
+                  className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 pt-2 border-t border-slate-100"
+                >
+                  <div className="relative flex-1">
+                    <Tags className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Nome da nova categoria (ex: Pets, Jardim, Assinaturas...)"
+                      value={novaCategoriaInput}
+                      onChange={(e) => setNovaCategoriaInput(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={salvandoCategorias || !novaCategoriaInput.trim()}
+                    className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-semibold cursor-pointer shadow-xs"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Adicionar Categoria</span>
+                  </button>
+                </form>
+
+                {/* Opção de atualizar histórico ao renomear */}
+                <div className="flex items-center justify-between bg-slate-50 rounded-xl px-3.5 py-2.5 border border-slate-200/70">
+                  <label className="flex items-center gap-2.5 text-xs text-slate-700 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={atualizarHistoricoAoRenomear}
+                      onChange={(e) => setAtualizarHistoricoAoRenomear(e.target.checked)}
+                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <span>
+                      Ao renomear uma categoria, atualizar automaticamente os itens de notas e
+                      lançamentos já cadastrados
+                    </span>
+                  </label>
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    {categoriasDespesa.length} categorias ativas
+                  </span>
+                </div>
+              </div>
+
+              {/* Lista de Categorias com edição inline, reordenação e exclusão */}
+              <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+                <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">
+                      Categorias Cadastradas ({resumoUsoCategorias.length})
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Clique no lápis para renomear ou use as setas para alterar a ordem de exibição
+                    </p>
+                  </div>
+                </div>
+
+                <div className="divide-y divide-slate-100">
+                  {resumoUsoCategorias.map((item, idx) => {
+                    const isEditing = editandoCategoriaOriginal === item.categoria;
+                    const isProtected =
+                      item.categoria === 'Supermercado' ||
+                      item.categoria === 'Farmácia' ||
+                      item.categoria === 'Outros';
+                    const isPets = item.categoria.toLowerCase() === 'pets';
+
+                    return (
+                      <div
+                        key={item.categoria}
+                        className="p-4 hover:bg-slate-50/80 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                      >
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <div className="flex flex-col gap-0.5">
+                            <button
+                              type="button"
+                              onClick={() => handleMoveCategoria(idx, -1)}
+                              disabled={idx === 0 || salvandoCategorias}
+                              className="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 cursor-pointer"
+                              title="Mover para cima"
+                            >
+                              <ArrowUp className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleMoveCategoria(idx, 1)}
+                              disabled={
+                                idx === resumoUsoCategorias.length - 1 || salvandoCategorias
+                              }
+                              className="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 cursor-pointer"
+                              title="Mover para baixo"
+                            >
+                              <ArrowDown className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
+                          {isEditing ? (
+                            <div className="flex items-center gap-2 flex-1 max-w-md">
+                              <input
+                                type="text"
+                                value={editandoCategoriaNovoNome}
+                                onChange={(e) => setEditandoCategoriaNovoNome(e.target.value)}
+                                className="flex-1 px-3 py-1.5 rounded-xl border border-indigo-300 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                                autoFocus
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleSaveRenameCategoria(item.categoria)}
+                                disabled={salvandoCategorias}
+                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer"
+                              >
+                                Salvar
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditandoCategoriaOriginal(null);
+                                  setEditandoCategoriaNovoNome('');
+                                }}
+                                className="px-2.5 py-1.5 rounded-xl border border-slate-200 text-slate-600 text-xs font-medium cursor-pointer"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-slate-900 text-sm">
+                                  {item.categoria}
+                                </span>
+                                {isPets && (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                    🐾 Pets
+                                  </span>
+                                )}
+                                {isProtected && (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600">
+                                    Sistema
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 mt-0.5">
+                                <span>
+                                  Itens em notas: <strong>{item.qtdItens}</strong>
+                                </span>
+                                <span>•</span>
+                                <span>
+                                  Lançamentos avulsos: <strong>{item.qtdTransacoes}</strong>
+                                </span>
+                                {item.totalItens > 0 && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="text-emerald-700 font-medium">
+                                      Total em itens: {formatCurrency(item.totalItens)}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {!isEditing && (
+                          <div className="flex items-center gap-1.5 self-end sm:self-center">
+                            <button
+                              type="button"
+                              onClick={() => handleStartRenameCategoria(item.categoria)}
+                              disabled={salvandoCategorias}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-medium cursor-pointer"
+                              title="Renomear categoria"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span>Editar</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteCategoria(item.categoria)}
+                              disabled={salvandoCategorias || isProtected}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-rose-200 hover:bg-rose-50 text-rose-600 disabled:opacity-30 disabled:pointer-events-none text-xs font-medium cursor-pointer"
+                              title={
+                                isProtected
+                                  ? 'Categoria principal do sistema não pode ser removida'
+                                  : 'Remover categoria da lista'
+                              }
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Excluir</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
@@ -6420,7 +6966,7 @@ ${JSON.stringify(itensDaNota)}`,
             : 'bg-white/95 border-slate-200 shadow-[0_-4px_20px_rgba(15,23,42,0.06)]'
         }`}
       >
-        <div className="max-w-md mx-auto grid grid-cols-7 items-center px-1.5 py-2">
+        <div className="max-w-md mx-auto grid grid-cols-8 items-center px-1 py-2">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;
@@ -6430,10 +6976,10 @@ ${JSON.stringify(itensDaNota)}`,
                 onClick={() => setActiveTab(item.id)}
                 title={item.label}
                 aria-label={item.label}
-                className="relative flex items-center justify-center py-1.5 cursor-pointer group"
+                className="relative flex items-center justify-center py-1 cursor-pointer group"
               >
                 <div
-                  className={`flex items-center justify-center w-10 h-10 rounded-2xl transition-all duration-200 ${
+                  className={`flex items-center justify-center w-9 h-9 rounded-2xl transition-all duration-200 ${
                     active
                       ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30 scale-105'
                       : darkMode
@@ -6441,7 +6987,7 @@ ${JSON.stringify(itensDaNota)}`,
                       : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
                   }`}
                 >
-                  <Icon className="w-5 h-5 stroke-[2.2]" />
+                  <Icon className="w-4.5 h-4.5 stroke-[2.2]" />
                 </div>
                 {active && (
                   <span className="absolute -bottom-0.5 w-1.5 h-1.5 rounded-full bg-emerald-500" />
