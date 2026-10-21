@@ -54,6 +54,7 @@ import {
   Tags,
   ArrowUp,
   ArrowDown,
+  Printer,
 } from 'lucide-react';
 
 // ==========================================
@@ -1105,6 +1106,7 @@ export default function App() {
         const garantiaInfo = calcularStatusGarantia(dataCompra, item.garantia_meses);
         return {
           ...item,
+          nota: nf,
           estabelecimento: nf?.estabelecimento || 'Local não informado',
           cnpj: nf?.cnpj || '',
           data_compra: dataCompra,
@@ -2002,6 +2004,9 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
   };
 
   const handleEditNota = (nf) => {
+    if (!nf) return;
+    setActiveTab('notas');
+    setViewingComprovante(null);
     const transacaoVinculada = transacoes.find((t) => t.id === nf.transacao_id);
     const itensDaNota = itensNota
       .filter((i) => i.nota_id === nf.id)
@@ -2033,6 +2038,172 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
     });
     setMetodoImportacaoAtivo(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleBaixarArquivoComprovante = async (nf) => {
+    if (!nf) return;
+    const url = nf.url_comprovante;
+    const nomeLimpo = (nf.estabelecimento || 'nota_fiscal')
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .slice(0, 30);
+    const dataLimpa = (nf.data_emissao || '').split('T')[0] || 'data';
+    const isPdf = url?.startsWith('data:application/pdf') || url?.toLowerCase().includes('.pdf');
+    const extensao = isPdf ? 'pdf' : 'jpg';
+    const nomeArquivo = `NF_${nomeLimpo}_${dataLimpa}.${extensao}`;
+
+    if (!url) {
+      handleImprimirOuBaixarCupomDigital(nf);
+      return;
+    }
+
+    try {
+      showNotice('Iniciando download da nota fiscal...');
+
+      if (url.startsWith('data:')) {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = nomeArquivo;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        showNotice('Download concluído com sucesso!');
+        return;
+      }
+
+      const resp = await fetch(url, { mode: 'cors' });
+      if (!resp.ok) throw new Error('Não foi possível carregar o arquivo remoto');
+      const blob = await resp.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = nomeArquivo;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => window.URL.revokeObjectURL(blobUrl), 2000);
+      showNotice('Download concluído com sucesso!');
+    } catch (err) {
+      console.warn('Fallback download direto:', err);
+      window.open(url, '_blank');
+      showNotice('Documento aberto no navegador. Pressione Salvar ou Baixar.');
+    }
+  };
+
+  const handleImprimirOuBaixarCupomDigital = (nf) => {
+    if (!nf) return;
+    const itensDaNota = itensNota.filter((i) => i.nota_id === nf.id);
+    const vals = calcularValoresNota(nf);
+    const printWindow = window.open('', '_blank', 'width=800,height=900');
+    if (!printWindow) {
+      showNotice('Permita pop-ups no navegador para visualizar o cupom impresso.', 'error');
+      return;
+    }
+
+    const htmlContent = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Comprovante Fiscal - ${nf.estabelecimento || 'Nota'}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 24px; color: #1e293b; background: #fff; }
+    .header { text-align: center; border-bottom: 2px dashed #94a3b8; padding-bottom: 14px; margin-bottom: 14px; }
+    .header h1 { font-size: 18px; margin: 0 0 4px 0; text-transform: uppercase; color: #0f172a; font-weight: 800; }
+    .header p { font-size: 12px; margin: 2px 0; color: #64748b; }
+    .meta { font-size: 12px; margin-bottom: 16px; background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; }
+    .meta table { width: 100%; border-collapse: collapse; }
+    .meta td { padding: 4px 0; }
+    .chave { word-break: break-all; font-family: monospace; font-size: 11px; background: #f1f5f9; padding: 6px; border-radius: 4px; margin-top: 6px; border: 1px solid #cbd5e1; text-align: center; }
+    table.itens { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 16px; }
+    table.itens th { background: #f1f5f9; text-align: left; padding: 8px; border-bottom: 2px solid #cbd5e1; color: #334155; font-size: 11px; text-transform: uppercase; }
+    table.itens td { padding: 8px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+    .totais { border-top: 2px dashed #94a3b8; padding-top: 12px; font-size: 13px; margin-bottom: 16px; }
+    .totais-row { display: flex; justify-content: space-between; padding: 3px 0; }
+    .totais-pago { font-size: 16px; font-weight: 800; color: #059669; margin-top: 6px; border-top: 1px solid #e2e8f0; padding-top: 6px; }
+    .garantia-badge { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; display: inline-block; }
+    .garantia-exp { background: #fff1f2; color: #e11d48; border: 1px solid #fecdd3; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; display: inline-block; }
+    .footer { text-align: center; font-size: 11px; color: #94a3b8; margin-top: 24px; border-top: 1px solid #e2e8f0; padding-top: 12px; }
+    @media print {
+      .no-print { display: none !important; }
+      body { margin: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="no-print" style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; background: #f8fafc; padding: 10px; border-radius: 8px; border: 1px solid #e2e8f0;">
+    <span style="font-size: 12px; color: #475569;">Documento pronto para impressão ou gravação em PDF</span>
+    <button onclick="window.print()" style="background: #059669; color: white; border: none; padding: 8px 18px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 13px;">
+      🖨️ Imprimir / Salvar como PDF
+    </button>
+  </div>
+  <div class="header">
+    <h1>${nf.estabelecimento || 'Comprovante Fiscal de Compra'}</h1>
+    ${nf.cnpj ? `<p>CNPJ: ${nf.cnpj}</p>` : ''}
+    <p>Super&Farma IAZ • Gestão Financeira Inteligente</p>
+  </div>
+  <div class="meta">
+    <table>
+      <tr>
+        <td style="width: 50%;"><strong>Data de Emissão:</strong> ${formatDateBR(nf.data_emissao)}</td>
+        <td style="width: 50%;"><strong>Pagamento:</strong> ${nf.forma_pagamento || 'PIX'}</td>
+      </tr>
+      ${nf.chave_acesso ? `<tr><td colspan="2"><div class="chave"><strong>Chave de Acesso NFC-e / NF-e:</strong><br/>${nf.chave_acesso}</div></td></tr>` : ''}
+    </table>
+  </div>
+  <table class="itens">
+    <thead>
+      <tr>
+        <th>Descrição do Item</th>
+        <th style="text-align: center; width: 70px;">Qtd</th>
+        <th style="text-align: right; width: 90px;">Unitário</th>
+        <th style="text-align: right; width: 90px;">Total</th>
+        <th style="width: 170px;">Garantia</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${itensDaNota.length > 0 ? itensDaNota.map((it) => {
+        const g = calcularStatusGarantia(nf.data_emissao, it.garantia_meses);
+        const gHtml = g
+          ? `<span class="${g.expirada ? 'garantia-exp' : 'garantia-badge'}">${g.texto}<br/><small style="font-weight: normal; opacity: 0.85;">${g.detalhe}</small></span>`
+          : `<span style="color: #94a3b8;">-</span>`;
+        return `
+          <tr>
+            <td><strong>${it.descricao_item}</strong><br/><small style="color: #64748b;">${it.categoria_item}</small></td>
+            <td style="text-align: center;">${it.quantidade} ${it.unidade}</td>
+            <td style="text-align: right;">${formatCurrency(it.valor_unitario)}</td>
+            <td style="text-align: right;"><strong>${formatCurrency(it.valor_total)}</strong></td>
+            <td>${gHtml}</td>
+          </tr>
+        `;
+      }).join('') : `<tr><td colspan="5" style="text-align:center; padding: 16px; color:#64748b;">Item resumido da compra</td></tr>`}
+    </tbody>
+  </table>
+  <div class="totais">
+    <div class="totais-row">
+      <span>Subtotal Bruto:</span>
+      <span>${formatCurrency(vals.valorTotalBruto)}</span>
+    </div>
+    ${vals.desconto > 0 ? `
+    <div class="totais-row" style="color: #059669;">
+      <span>Desconto Aplicado:</span>
+      <span>- ${formatCurrency(vals.desconto)}</span>
+    </div>` : ''}
+    <div class="totais-row totais-pago">
+      <span>Valor Total Pago:</span>
+      <span>${formatCurrency(vals.valorPago)}</span>
+    </div>
+  </div>
+  <div class="footer">
+    Comprovante emitido pelo Super&Farma IAZ em ${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR')}
+  </div>
+  <script>
+    setTimeout(() => { window.print(); }, 500);
+  </script>
+</body>
+</html>`;
+
+    printWindow.document.open();
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
   };
 
   const handleAttachComprovanteOnly = async (e) => {
@@ -5462,6 +5633,47 @@ ${JSON.stringify(itensDaNota)}`,
                                 <span className="text-slate-500">{g.detalhe}</span>
                               </div>
                             )}
+
+                            {/* AÇÕES: BAIXAR NOTA E EDITAR REGISTRO */}
+                            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200/60 mt-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const nf =
+                                    item.nota ||
+                                    notasFiscais.find((n) => n.id === item.nota_id);
+                                  if (nf) {
+                                    setViewingComprovante(nf);
+                                  } else {
+                                    showNotice('Nota fiscal vinculada não encontrada.', 'error');
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold border border-emerald-200 transition cursor-pointer"
+                                title="Baixar arquivo da nota ou cupom fiscal de garantia"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                <span>Baixar / Ver Nota</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const nf =
+                                    item.nota ||
+                                    notasFiscais.find((n) => n.id === item.nota_id);
+                                  if (nf) {
+                                    handleEditNota(nf);
+                                  } else {
+                                    showNotice('Nota fiscal vinculada não encontrada.', 'error');
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition cursor-pointer"
+                                title="Editar dados, valor, data ou itens deste registro"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                                <span>Editar Registro</span>
+                              </button>
+                            </div>
                           </div>
                         );
                       })}
@@ -5626,16 +5838,14 @@ ${JSON.stringify(itensDaNota)}`,
                                 );
                               })()}
 
-                              {nf.url_comprovante && (
-                                <button
-                                  onClick={() => setViewingComprovante(nf)}
-                                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg cursor-pointer"
-                                  title="Visualizar imagem/documento da nota fiscal"
-                                >
-                                  <Eye className="w-3.5 h-3.5" />
-                                  <span className="hidden sm:inline">Ver Nota</span>
-                                </button>
-                              )}
+                              <button
+                                onClick={() => setViewingComprovante(nf)}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 cursor-pointer transition"
+                                title="Visualizar e baixar arquivo ou cupom digital da nota fiscal"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                <span className="hidden sm:inline">Baixar / Ver</span>
+                              </button>
 
                               <button
                                 onClick={() =>
@@ -5848,6 +6058,38 @@ ${JSON.stringify(itensDaNota)}`,
                             <p className="text-sm font-bold text-emerald-600">
                               Total: {formatCurrency(it.valor_total)}
                             </p>
+                            <div className="flex items-center gap-1.5 mt-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const nf =
+                                    it.nota ||
+                                    notasFiscais.find((n) => n.id === it.nota_id);
+                                  if (nf) setViewingComprovante(nf);
+                                  else showNotice('Nota fiscal vinculada não encontrada.', 'error');
+                                }}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-[11px] font-semibold border border-emerald-200 cursor-pointer transition"
+                                title="Baixar ou ver nota fiscal vinculada"
+                              >
+                                <Download className="w-3 h-3" />
+                                <span>Nota</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const nf =
+                                    it.nota ||
+                                    notasFiscais.find((n) => n.id === it.nota_id);
+                                  if (nf) handleEditNota(nf);
+                                  else showNotice('Nota fiscal vinculada não encontrada.', 'error');
+                                }}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-semibold cursor-pointer transition"
+                                title="Editar registro da nota"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                                <span>Editar</span>
+                              </button>
+                            </div>
                           </div>
                         </div>
                       );
@@ -7412,65 +7654,202 @@ ${JSON.stringify(itensDaNota)}`,
         </div>
       </main>
 
-      {/* MODAL DE VISUALIZAÇÃO DO COMPROVANTE / NOTA FISCAL */}
-      {viewingComprovante && (
-        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-xl overflow-hidden">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h3 className="font-bold text-slate-900 text-sm">
-                  {viewingComprovante.estabelecimento}
-                </h3>
-                {(() => {
-                  const vals = calcularValoresNota(viewingComprovante);
-                  return (
-                    <p className="text-xs text-slate-500">
-                      Emissão: {formatDateBR(viewingComprovante.data_emissao)} • Total:{' '}
-                      {formatCurrency(vals.valorTotalBruto)} • Desconto: -{' '}
-                      {formatCurrency(vals.desconto)} •{' '}
-                      <strong className="text-emerald-700">
-                        Valor Pago: {formatCurrency(vals.valorPago)}
-                      </strong>
-                    </p>
-                  );
-                })()}
-              </div>
-              <div className="flex items-center gap-2">
-                <a
-                  href={viewingComprovante.url_comprovante}
-                  download={`nota-${viewingComprovante.estabelecimento}.jpg`}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Baixar</span>
-                </a>
-                <button
-                  onClick={() => setViewingComprovante(null)}
-                  className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
+      {/* MODAL DE VISUALIZAÇÃO E DOWNLOAD DO COMPROVANTE / NOTA FISCAL */}
+      {viewingComprovante && (() => {
+        const vals = calcularValoresNota(viewingComprovante);
+        const itensDaNotaModal = itensNota.filter((i) => i.nota_id === viewingComprovante.id);
+        const temComprovanteArquivo = !!viewingComprovante.url_comprovante;
 
-            <div className="p-4 overflow-auto flex-1 bg-slate-50 flex items-center justify-center">
-              {viewingComprovante.url_comprovante?.startsWith('data:application/pdf') ? (
-                <iframe
-                  src={viewingComprovante.url_comprovante}
-                  title="Documento Nota Fiscal"
-                  className="w-full h-[70vh] rounded-lg border border-slate-200"
-                />
-              ) : (
-                <img
-                  src={viewingComprovante.url_comprovante}
-                  alt="Comprovante da Nota Fiscal"
-                  className="max-w-full max-h-[70vh] object-contain rounded-lg shadow-xs"
-                />
-              )}
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+            <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+              {/* CABEÇALHO DO MODAL */}
+              <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/70">
+                <div className="min-w-0">
+                  <h3 className="font-bold text-slate-900 text-sm truncate">
+                    {viewingComprovante.estabelecimento}
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Emissão: <strong>{formatDateBR(viewingComprovante.data_emissao)}</strong> • Total:{' '}
+                    {formatCurrency(vals.valorTotalBruto)} •{' '}
+                    <strong className="text-emerald-700">
+                      Valor Pago: {formatCurrency(vals.valorPago)}
+                    </strong>
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                  {/* BOTÃO EDITAR REGISTRO */}
+                  <button
+                    type="button"
+                    onClick={() => handleEditNota(viewingComprovante)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold cursor-pointer transition"
+                    title="Editar dados, valor, data ou itens desta nota fiscal"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Editar</span>
+                  </button>
+
+                  {/* BOTÃO BAIXAR ARQUIVO OU CUPOM */}
+                  <button
+                    type="button"
+                    onClick={() => handleBaixarArquivoComprovante(viewingComprovante)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs cursor-pointer transition"
+                    title={temComprovanteArquivo ? 'Baixar arquivo de imagem ou documento da nota' : 'Gerar e baixar cupom fiscal digital'}
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>{temComprovanteArquivo ? 'Baixar Arquivo' : 'Baixar Cupom'}</span>
+                  </button>
+
+                  {/* BOTÃO IMPRIMIR / PDF */}
+                  <button
+                    type="button"
+                    onClick={() => handleImprimirOuBaixarCupomDigital(viewingComprovante)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium cursor-pointer transition"
+                    title="Imprimir ou Salvar Comprovante em PDF"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Imprimir PDF</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setViewingComprovante(null)}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer ml-1"
+                    title="Fechar visualização"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* CORPO DO MODAL */}
+              <div className="p-4 overflow-auto flex-1 bg-slate-50 space-y-4">
+                {temComprovanteArquivo ? (
+                  <div className="flex flex-col items-center justify-center space-y-3">
+                    {viewingComprovante.url_comprovante?.startsWith('data:application/pdf') ? (
+                      <iframe
+                        src={viewingComprovante.url_comprovante}
+                        title="Documento Nota Fiscal"
+                        className="w-full h-[65vh] rounded-xl border border-slate-200 bg-white shadow-xs"
+                      />
+                    ) : (
+                      <img
+                        src={viewingComprovante.url_comprovante}
+                        alt="Comprovante da Nota Fiscal"
+                        className="max-w-full max-h-[65vh] object-contain rounded-xl shadow-xs border border-slate-200 bg-white"
+                      />
+                    )}
+                  </div>
+                ) : (
+                  /* CUPOM DIGITAL QUANDO NÃO HÁ FOTO ANEXADA */
+                  <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+                    <div className="text-center border-b border-dashed border-slate-200 pb-3">
+                      <div className="inline-flex p-2.5 rounded-full bg-emerald-50 text-emerald-600 mb-2">
+                        <Receipt className="w-6 h-6" />
+                      </div>
+                      <h4 className="font-bold text-slate-900 text-base">{viewingComprovante.estabelecimento}</h4>
+                      {viewingComprovante.cnpj && (
+                        <p className="text-xs text-slate-500">CNPJ: {viewingComprovante.cnpj}</p>
+                      )}
+                      <p className="text-[11px] text-slate-400 mt-0.5">Comprovante Digital & Controle de Garantia</p>
+                    </div>
+
+                    <div className="bg-slate-50 rounded-xl p-3 text-xs space-y-1.5 text-slate-600 border border-slate-100">
+                      <div className="flex justify-between">
+                        <span>Data de Emissão:</span>
+                        <strong className="text-slate-800">{formatDateBR(viewingComprovante.data_emissao)}</strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Forma de Pagamento:</span>
+                        <strong className="text-slate-800">{viewingComprovante.forma_pagamento || 'PIX'}</strong>
+                      </div>
+                      {viewingComprovante.chave_acesso && (
+                        <div className="pt-1.5 mt-1 border-t border-slate-200/60 font-mono text-[11px] break-all">
+                          <span className="text-slate-400">Chave: </span>
+                          <span className="text-slate-700">{viewingComprovante.chave_acesso}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ITENS E GARANTIAS NO MODAL */}
+                    {itensDaNotaModal.length > 0 && (
+                      <div className="border border-slate-200 rounded-xl overflow-hidden">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                            <tr>
+                              <th className="py-2 px-3">Item</th>
+                              <th className="py-2 px-2 text-center">Qtd</th>
+                              <th className="py-2 px-2 text-right">Unitário</th>
+                              <th className="py-2 px-2 text-right">Total</th>
+                              <th className="py-2 px-3">Garantia</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {itensDaNotaModal.map((it) => {
+                              const g = calcularStatusGarantia(viewingComprovante.data_emissao, it.garantia_meses);
+                              return (
+                                <tr key={it.id}>
+                                  <td className="py-2 px-3">
+                                    <p className="font-semibold text-slate-800">{it.descricao_item}</p>
+                                    <p className="text-[11px] text-slate-400">{it.categoria_item}</p>
+                                  </td>
+                                  <td className="py-2 px-2 text-center text-slate-600">
+                                    {it.quantidade} {it.unidade}
+                                  </td>
+                                  <td className="py-2 px-2 text-right text-slate-600">
+                                    {formatCurrency(it.valor_unitario)}
+                                  </td>
+                                  <td className="py-2 px-2 text-right font-semibold text-slate-900">
+                                    {formatCurrency(it.valor_total)}
+                                  </td>
+                                  <td className="py-2 px-3">
+                                    {g ? (
+                                      <span
+                                        className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md border ${
+                                          g.expirada
+                                            ? 'bg-rose-50 border-rose-200 text-rose-600 font-bold'
+                                            : 'bg-emerald-50 border-emerald-200 text-emerald-700 font-medium'
+                                        }`}
+                                      >
+                                        {g.texto}
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-400">-</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {/* TOTAIS */}
+                    <div className="pt-2 border-t border-dashed border-slate-200 space-y-1 text-xs">
+                      <div className="flex justify-between text-slate-500">
+                        <span>Total Bruto:</span>
+                        <span>{formatCurrency(vals.valorTotalBruto)}</span>
+                      </div>
+                      {vals.desconto > 0 && (
+                        <div className="flex justify-between text-emerald-600 font-medium">
+                          <span>Desconto:</span>
+                          <span>- {formatCurrency(vals.desconto)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between text-sm font-bold text-slate-900 pt-1 border-t border-slate-100">
+                        <span>Valor Total Pago:</span>
+                        <span className="text-emerald-700">{formatCurrency(vals.valorPago)}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* MODAL DE NOVO / EDITAR PAGAMENTO */}
       {showTransacaoModal && (
