@@ -482,6 +482,7 @@ export default function App() {
   const [editandoCategoriaOriginal, setEditandoCategoriaOriginal] = useState(null);
   const [editandoCategoriaNovoNome, setEditandoCategoriaNovoNome] = useState('');
   const [atualizarHistoricoAoRenomear, setAtualizarHistoricoAoRenomear] = useState(true);
+  const [salvandoCategorias, setSalvandoCategorias] = useState(false);
 
   const CATEGORIAS_DESPESA = categoriasDespesa;
 
@@ -3245,6 +3246,7 @@ ${JSON.stringify(itensDaNota)}`,
     setCategoriasDespesa(listaFinal);
 
     if (!supabase) return;
+    setSalvandoCategorias(true);
     try {
       if (configCategoriasDbId) {
         await supabase
@@ -3275,6 +3277,8 @@ ${JSON.stringify(itensDaNota)}`,
       }
     } catch (err) {
       console.error('Erro ao sincronizar categorias no Supabase:', err);
+    } finally {
+      setSalvandoCategorias(false);
     }
   };
 
@@ -6694,7 +6698,7 @@ ${JSON.stringify(itensDaNota)}`,
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer shrink-0"
                     title="Garantir que todas as categorias padrão (incluindo Pets) estejam presentes"
                   >
-                    <RotateCcw className="w-3.5 h-3.5" />
+                    <RefreshCw className="w-3.5 h-3.5" />
                     <span>Restaurar Padrões</span>
                   </button>
                 </div>
@@ -6761,8 +6765,8 @@ ${JSON.stringify(itensDaNota)}`,
                   {resumoUsoCategorias.map((item, idx) => {
                     const isEditing = editandoCategoriaOriginal === item.categoria;
                     const isProtected =
-                      item.categoria === 'Supermercado' ||
-                      item.categoria === 'Farmácia' ||
+                      item.categoria === 'Alimentação & Supermercado' ||
+                      item.categoria === 'Saúde & Farmácia' ||
                       item.categoria === 'Outros';
                     const isPets = item.categoria.toLowerCase() === 'pets';
 
@@ -6842,17 +6846,17 @@ ${JSON.stringify(itensDaNota)}`,
                               </div>
                               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 mt-0.5">
                                 <span>
-                                  Itens em notas: <strong>{item.qtdItens}</strong>
+                                  Itens em notas: <strong>{item.qtdItensNota ?? 0}</strong>
                                 </span>
                                 <span>•</span>
                                 <span>
-                                  Lançamentos avulsos: <strong>{item.qtdTransacoes}</strong>
+                                  Lançamentos avulsos: <strong>{item.qtdTransacoes ?? 0}</strong>
                                 </span>
-                                {item.totalItens > 0 && (
+                                {(item.valorTotalItens ?? 0) > 0 && (
                                   <>
                                     <span>•</span>
                                     <span className="text-emerald-700 font-medium">
-                                      Total em itens: {formatCurrency(item.totalItens)}
+                                      Total em itens: {formatCurrency(item.valorTotalItens)}
                                     </span>
                                   </>
                                 )}
