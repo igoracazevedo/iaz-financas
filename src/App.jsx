@@ -775,6 +775,8 @@ export default function App() {
   const [extractedNota, setExtractedNota] = useState(null);
   const [expandedNotaId, setExpandedNotaId] = useState(null);
   const [viewingComprovante, setViewingComprovante] = useState(null);
+  const [secaoGarantiaAberta, setSecaoGarantiaAberta] = useState(false);
+  const [secaoHistoricoAberta, setSecaoHistoricoAberta] = useState(false);
 
   // Estados de Importação de Notas Fiscais em Lote (50+ notas de Supermercado, Farmácia, etc.)
   const [batchQueue, setBatchQueue] = useState([]);
@@ -1706,8 +1708,12 @@ export default function App() {
       const reader = new FileReader();
       reader.onload = () => {
         const result = reader.result;
-        const mimeType =
-          file.type || (lowerName.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
+        let mimeType = file.type || '';
+        if (lowerName.endsWith('.pdf') || mimeType.includes('pdf')) {
+          mimeType = 'application/pdf';
+        } else if (!mimeType) {
+          mimeType = 'image/jpeg';
+        }
         if (mimeType.startsWith('image/')) {
           const img = new Image();
           img.onload = () => {
@@ -1736,10 +1742,10 @@ export default function App() {
           };
           img.onerror = () => {
             resolve({
-              base64Data: result.split(',')[1],
-              dataUrl: result,
-              mimeType,
-            });
+            base64Data: typeof result === 'string' && result.includes(',') ? result.split(',')[1] : result,
+            dataUrl: result,
+            mimeType: mimeType === 'application/pdf' ? 'application/pdf' : mimeType,
+          });
           };
           img.src = result;
         } else {
@@ -1828,8 +1834,8 @@ Para cada item, preencha garantia_meses (número inteiro de meses de garantia): 
         ]
       : [
           {
-            type: mimeType === 'application/pdf' ? 'document' : 'image',
-            mime_type: mimeType,
+            type: (mimeType === 'application/pdf' || String(mimeType || '').includes('pdf')) ? 'document' : 'image',
+            mime_type: (mimeType === 'application/pdf' || String(mimeType || '').includes('pdf')) ? 'application/pdf' : mimeType,
             data: base64Data,
           },
           {
@@ -2210,8 +2216,41 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const { dataUrl } = await fileToBase64(file);
+      const { dataUrl, base64Data, mimeType, textContent } = await fileToBase64(file);
       setPreviewImage(dataUrl);
+
+      // Se a nota na tela de edição não possui itens, extrai os itens automaticamente do PDF/imagem!
+      if (
+        extractedNota &&
+        (!extractedNota.itens || extractedNota.itens.length === 0) &&
+        effectiveGeminiKey
+      ) {
+        showNotice('Lendo dados e itens do arquivo anexado com IA...');
+        try {
+          const parsed = await extrairNotaViaGemini(
+            base64Data,
+            mimeType,
+            textContent,
+            `Arquivo: ${file.name}`
+          );
+          if (Array.isArray(parsed.itens) && parsed.itens.length > 0) {
+            setExtractedNota((prev) => ({
+              ...prev,
+              itens: parsed.itens,
+              valor_total: Number(parsed.valor_total) || prev.valor_total,
+              desconto: Number(parsed.desconto) || prev.desconto,
+              estabelecimento: prev.estabelecimento || parsed.estabelecimento,
+            }));
+            showNotice(
+              `Comprovante anexado e ${parsed.itens.length} itens extraídos pela IA! Revise abaixo.`
+            );
+            return;
+          }
+        } catch (errIa) {
+          console.warn('Erro ao extrair itens do anexo:', errIa);
+        }
+      }
+
       showNotice('Comprovante anexado! Clique em Salvar para gravar na nota.');
     } catch (err) {
       showNotice(`Erro ao anexar comprovante: ${err.message}`, 'error');
@@ -3211,12 +3250,12 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
     if (!file || !extractedNota) return;
     setOcrLoading(true);
     try {
-      const { base64Data, dataUrl, mimeType } = await fileToBase64(file);
+      const { base64Data, dataUrl, mimeType, textContent } = await fileToBase64(file);
       setPreviewImage(dataUrl);
       const parsed = await extrairNotaViaGemini(
         base64Data,
         mimeType,
-        '',
+        textContent,
         `Extraia todos os itens, quantidades, valores e desconto desta nota fiscal da loja: ${extractedNota.estabelecimento}`
       );
       const novosItens =
@@ -4532,11 +4571,37 @@ ${JSON.stringify(itensDaNota)}`,
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div className="md:col-span-1 flex flex-col gap-2">
                         {previewImage ? (
-                          <img
-                            src={previewImage}
-                            alt="Cupom Fiscal"
-                            className="w-full max-h-64 object-contain rounded-xl border border-slate-200 bg-slate-50"
-                          />
+                          previewImage.startsWith('data:application/pdf') ||
+                          previewImage.toLowerCase().includes('.pdf') ? (
+                            <div className="w-full h-64 rounded-xl border border-slate-200 overflow-hidden bg-slate-100 flex flex-col">
+                              <div className="bg-slate-200/90 px-3 py-1.5 flex items-center justify-between text-xs text-slate-700 border-b border-slate-300">
+                                <span className="font-semibold flex items-center gap-1.5 truncate">
+                                  <FileText className="w-4 h-4 text-rose-600 shrink-0" />
+                                  <span>Documento PDF da Nota</span>
+                                </span>
+                                <a
+                                  href={previewImage}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-emerald-700 hover:text-emerald-800 font-semibold inline-flex items-center gap-1 shrink-0"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" />
+                                  <span>Abrir</span>
+                                </a>
+                              </div>
+                              <iframe
+                                src={previewImage}
+                                title="Visualização da Nota Fiscal PDF"
+                                className="w-full flex-1 border-none bg-white"
+                              />
+                            </div>
+                          ) : (
+                            <img
+                              src={previewImage}
+                              alt="Cupom Fiscal"
+                              className="w-full max-h-64 object-contain rounded-xl border border-slate-200 bg-slate-50"
+                            />
+                          )
                         ) : (
                           <div className="w-full h-44 rounded-xl border border-dashed border-slate-300 bg-slate-50 flex flex-col items-center justify-center text-xs text-slate-400 p-4 text-center">
                             <FileText className="w-6 h-6 mb-1 text-slate-300" />
@@ -4739,12 +4804,12 @@ ${JSON.stringify(itensDaNota)}`,
                             ) : (
                               <>
                                 <Camera className="w-3.5 h-3.5" />
-                                <span>Fotografar Itens do Cupom (IA)</span>
+                                <span>Ler Itens do Cupom (Foto / PDF)</span>
                               </>
                             )}
                             <input
                               type="file"
-                              accept="image/*"
+                              accept="image/*,application/pdf"
                               capture="environment"
                               onChange={handleExtrairItensComplementaresDaFoto}
                               disabled={ocrLoading}
@@ -5578,132 +5643,201 @@ ${JSON.stringify(itensDaNota)}`,
                 )}
               </div>
 
-              {/* 3. SEPARAÇÃO: CONTROLE DE GARANTIA DE ELETRÔNICOS E PRODUTOS */}
-              {itensEnriquecidos.some((i) => Number(i.garantia_meses) > 0) && (
-                <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs">
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="font-bold text-slate-900 flex items-center gap-2 text-sm">
-                      <ShieldCheck className="w-5 h-5 text-emerald-600" />
-                      <span>Controle de Garantia de Eletrônicos e Produtos</span>
-                    </h3>
-                  </div>
+              {/* 3. SEPARAÇÃO: CONTROLE DE GARANTIA DE ELETRÔNICOS E PRODUTOS (RECOLHÍVEL) */}
+              {itensEnriquecidos.some((i) => Number(i.garantia_meses) > 0) && (() => {
+                const itensGarantia = itensEnriquecidos.filter((i) => Number(i.garantia_meses) > 0);
+                const expiradosCount = itensGarantia.filter((i) => i.garantiaInfo?.expirada).length;
+                const ativosCount = itensGarantia.length - expiradosCount;
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {itensEnriquecidos
-                      .filter((i) => Number(i.garantia_meses) > 0)
-                      .map((item) => {
-                        const g = item.garantiaInfo;
-                        return (
-                          <div
-                            key={item.id}
-                            className={`p-3.5 rounded-xl border flex flex-col justify-between gap-2 ${
-                              g?.expirada
-                                ? 'bg-rose-50/60 border-rose-200'
-                                : 'bg-slate-50/70 border-slate-200'
-                            }`}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div>
-                                <p className="font-bold text-slate-900 text-sm">
-                                  {item.descricao_item}
-                                </p>
-                                <p className="text-xs text-slate-500 mt-0.5">
-                                  Comprado em {formatDateBR(item.data_compra)} •{' '}
-                                  {item.estabelecimento} • {formatCurrency(item.valor_total)}
-                                </p>
-                              </div>
-                              {g?.expirada ? (
-                                <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0" />
-                              ) : (
-                                <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0" />
-                              )}
-                            </div>
-
-                            {g && (
-                              <div className="flex items-center justify-between pt-2 border-t border-slate-200/60 text-xs">
-                                <span
-                                  className={
-                                    g.expirada
-                                      ? 'font-bold text-rose-600'
-                                      : 'font-semibold text-emerald-700'
-                                  }
-                                >
-                                  {g.texto}
-                                </span>
-                                <span className="text-slate-500">{g.detalhe}</span>
-                              </div>
-                            )}
-
-                            {/* AÇÕES: BAIXAR NOTA E EDITAR REGISTRO */}
-                            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200/60 mt-1">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const nf =
-                                    item.nota ||
-                                    notasFiscais.find((n) => n.id === item.nota_id);
-                                  if (nf) {
-                                    setViewingComprovante(nf);
-                                  } else {
-                                    showNotice('Nota fiscal vinculada não encontrada.', 'error');
-                                  }
-                                }}
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold border border-emerald-200 transition cursor-pointer"
-                                title="Baixar arquivo da nota ou cupom fiscal de garantia"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                                <span>Baixar / Ver Nota</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const nf =
-                                    item.nota ||
-                                    notasFiscais.find((n) => n.id === item.nota_id);
-                                  if (nf) {
-                                    handleEditNota(nf);
-                                  } else {
-                                    showNotice('Nota fiscal vinculada não encontrada.', 'error');
-                                  }
-                                }}
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition cursor-pointer"
-                                title="Editar dados, valor, data ou itens deste registro"
-                              >
-                                <Edit3 className="w-3.5 h-3.5" />
-                                <span>Editar Registro</span>
-                              </button>
-                            </div>
+                return (
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden transition-all">
+                    {/* CABEÇALHO CLICÁVEL RECOLHÍVEL */}
+                    <button
+                      type="button"
+                      onClick={() => setSecaoGarantiaAberta((prev) => !prev)}
+                      className="w-full p-4 sm:p-5 flex items-center justify-between text-left hover:bg-slate-50/80 transition cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="p-2.5 rounded-xl bg-emerald-50 text-emerald-600 shrink-0">
+                          <ShieldCheck className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-bold text-slate-900 text-sm sm:text-base">
+                              Controle de Garantia de Eletrônicos e Produtos
+                            </h3>
+                            <span className="bg-emerald-100 text-emerald-800 text-[11px] font-bold px-2 py-0.5 rounded-full">
+                              {itensGarantia.length}
+                            </span>
                           </div>
-                        );
-                      })}
-                  </div>
-                </div>
-              )}
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            {ativosCount} ativa(s){expiradosCount > 0 ? ` • ${expiradosCount} expirada(s)` : ''} • Toque para {secaoGarantiaAberta ? 'recolher' : 'expandir'}
+                          </p>
+                        </div>
+                      </div>
 
-              {/* 4. HISTÓRICO DE NOTAS E CUPONS FISCAIS (COM FILTRO DE ANO E MÊS, TRAZENDO TODAS POR PADRÃO) */}
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
-                <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <h3 className="font-semibold text-slate-900">
-                      Histórico de Notas e Cupons Fiscais ({notasHistoricoFiltradas.length}
-                      {notasHistoricoFiltradas.length !== notasFiscais.length
-                        ? ` de ${notasFiscais.length}`
-                        : ''}
-                      )
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Exibindo todas as notas por padrão. Filtre por ano ou mês se desejar.
-                    </p>
+                      <div className="flex items-center gap-2 shrink-0 ml-2">
+                        <span className="text-xs font-semibold text-slate-500 hidden sm:inline">
+                          {secaoGarantiaAberta ? 'Recolher' : 'Ver Produtos'}
+                        </span>
+                        <div className="p-1.5 rounded-lg bg-slate-100 text-slate-600">
+                          {secaoGarantiaAberta ? (
+                            <ChevronUp className="w-4 h-4" />
+                          ) : (
+                            <ChevronDown className="w-4 h-4" />
+                          )}
+                        </div>
+                      </div>
+                    </button>
+
+                    {/* CORPO EXPANSÍVEL */}
+                    {secaoGarantiaAberta && (
+                      <div className="p-4 sm:p-5 pt-0 border-t border-slate-100">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3">
+                          {itensGarantia.map((item) => {
+                            const g = item.garantiaInfo;
+                            return (
+                              <div
+                                key={item.id}
+                                className={`p-3.5 rounded-xl border flex flex-col justify-between gap-2 ${
+                                  g?.expirada
+                                    ? 'bg-rose-50/60 border-rose-200'
+                                    : 'bg-slate-50/70 border-slate-200'
+                                }`}
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <p className="font-bold text-slate-900 text-sm">
+                                      {item.descricao_item}
+                                    </p>
+                                    <p className="text-xs text-slate-500 mt-0.5">
+                                      Comprado em {formatDateBR(item.data_compra)} •{' '}
+                                      {item.estabelecimento} • {formatCurrency(item.valor_total)}
+                                    </p>
+                                  </div>
+                                  {g?.expirada ? (
+                                    <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0" />
+                                  ) : (
+                                    <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0" />
+                                  )}
+                                </div>
+
+                                {g && (
+                                  <div className="flex items-center justify-between pt-2 border-t border-slate-200/60 text-xs">
+                                    <span
+                                      className={
+                                        g.expirada
+                                          ? 'font-bold text-rose-600'
+                                          : 'font-semibold text-emerald-700'
+                                      }
+                                    >
+                                      {g.texto}
+                                    </span>
+                                    <span className="text-slate-500">{g.detalhe}</span>
+                                  </div>
+                                )}
+
+                                {/* AÇÕES: BAIXAR NOTA E EDITAR REGISTRO */}
+                                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200/60 mt-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const nf =
+                                        item.nota ||
+                                        notasFiscais.find((n) => n.id === item.nota_id);
+                                      if (nf) {
+                                        setViewingComprovante(nf);
+                                      } else {
+                                        showNotice('Nota fiscal vinculada não encontrada.', 'error');
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold border border-emerald-200 transition cursor-pointer"
+                                    title="Baixar arquivo da nota ou cupom fiscal de garantia"
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                    <span>Baixar / Ver Nota</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const nf =
+                                        item.nota ||
+                                        notasFiscais.find((n) => n.id === item.nota_id);
+                                      if (nf) {
+                                        handleEditNota(nf);
+                                      } else {
+                                        showNotice('Nota fiscal vinculada não encontrada.', 'error');
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition cursor-pointer"
+                                    title="Editar dados, valor, data ou itens deste registro"
+                                  >
+                                    <Edit3 className="w-3.5 h-3.5" />
+                                    <span>Editar Registro</span>
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
+                );
+              })()}
+
+              {/* 4. HISTÓRICO DE NOTAS E CUPONS FISCAIS (RECOLHÍVEL COM FILTRO) */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden transition-all">
+                <div className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/50">
+                  <button
+                    type="button"
+                    onClick={() => setSecaoHistoricoAberta((prev) => !prev)}
+                    className="flex-1 flex items-center justify-between text-left hover:opacity-80 transition cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="p-2.5 rounded-xl bg-slate-100 text-slate-700 shrink-0">
+                        <Receipt className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-bold text-slate-900 text-sm sm:text-base">
+                            Histórico de Notas e Cupons Fiscais
+                          </h3>
+                          <span className="bg-slate-200 text-slate-700 text-[11px] font-bold px-2 py-0.5 rounded-full">
+                            {notasHistoricoFiltradas.length}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {notasHistoricoFiltradas.length} nota(s) registrada(s) • Toque para {secaoHistoricoAberta ? 'recolher' : 'expandir lista'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0 ml-2">
+                      <span className="text-xs font-semibold text-slate-500 hidden sm:inline">
+                        {secaoHistoricoAberta ? 'Recolher' : 'Ver Notas'}
+                      </span>
+                      <div className="p-1.5 rounded-lg bg-slate-100 text-slate-600">
+                        {secaoHistoricoAberta ? (
+                          <ChevronUp className="w-4 h-4" />
+                        ) : (
+                          <ChevronDown className="w-4 h-4" />
+                        )}
+                      </div>
+                    </div>
+                  </button>
 
                   {/* PEQUENO FILTRO DE ANO E MÊS */}
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5">
+                  <div className="flex flex-wrap items-center gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-200/60">
+                    <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 shadow-2xs">
                       <Filter className="w-3.5 h-3.5 text-slate-400" />
                       <select
                         value={filtroHistoricoNotaAno}
-                        onChange={(e) => setFiltroHistoricoNotaAno(e.target.value)}
+                        onChange={(e) => {
+                          setFiltroHistoricoNotaAno(e.target.value);
+                          setSecaoHistoricoAberta(true);
+                        }}
                         className="bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
                         aria-label="Filtrar por Ano"
                       >
@@ -5716,11 +5850,14 @@ ${JSON.stringify(itensDaNota)}`,
                       </select>
                     </div>
 
-                    <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5">
+                    <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 shadow-2xs">
                       <Calendar className="w-3.5 h-3.5 text-slate-400" />
                       <select
                         value={filtroHistoricoNotaMes}
-                        onChange={(e) => setFiltroHistoricoNotaMes(e.target.value)}
+                        onChange={(e) => {
+                          setFiltroHistoricoNotaMes(e.target.value);
+                          setSecaoHistoricoAberta(true);
+                        }}
                         className="bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer"
                         aria-label="Filtrar por Mês"
                       >
@@ -5756,7 +5893,10 @@ ${JSON.stringify(itensDaNota)}`,
                   </div>
                 </div>
 
-                {notasHistoricoFiltradas.length === 0 ? (
+                {/* LISTA EXPANSÍVEL DE NOTAS */}
+                {secaoHistoricoAberta && (
+                  <div className="border-t border-slate-100">
+                    {notasHistoricoFiltradas.length === 0 ? (
                   <div className="p-10 text-center text-slate-400 text-sm">
                     {notasFiscais.length === 0
                       ? 'Nenhuma nota fiscal escaneada até o momento.'
@@ -5945,8 +6085,10 @@ ${JSON.stringify(itensDaNota)}`,
                   </div>
                 )}
               </div>
-            </div>
-          )}
+            )}
+          </div>
+        </div>
+      )}
 
           {/* ==========================================
               ABA 3: BUSCA DE ITENS E HISTÓRICO DE PREÇOS / GARANTIAS
