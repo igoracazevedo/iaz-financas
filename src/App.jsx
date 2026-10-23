@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { GoogleGenAI } from '@google/genai';
 import jsQR from 'jsqr';
 import {
+  ArrowLeftRight,
   CreditCard,
   ArrowDownCircle,
   Receipt,
@@ -61,6 +62,8 @@ import {
   Tag,
   GripVertical,
 } from 'lucide-react';
+
+const APP_VERSION = 'v1.3.1';
 
 // ==========================================
 // CONFIGURAÇÃO SUPABASE & GEMINI API
@@ -1062,6 +1065,144 @@ function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBran
           </div>
         </div>
       )}
+
+      {/* MODAL PARA ESCOLHER ENTRE PRODUTOS COM O MESMO APELIDO */}
+      {modalEscolhaProduto && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded-full mb-1">
+                  <Tags className="w-3.5 h-3.5" />
+                  <span>Escolha de Produto por Apelido</span>
+                </div>
+                <h3 className="font-bold text-slate-900 text-base">
+                  {modalEscolhaProduto.grupo?.nomeExibicao}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Existem {modalEscolhaProduto.grupo?.produtos?.length} produtos cadastrados com este apelido.
+                  {modalEscolhaProduto.itemEmEdicaoId ? ' Escolha qual produto deseja usar neste item da lista:' : ' Escolha qual adicionar à lista:'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalEscolhaProduto(null)}
+                className="p-1 rounded-lg text-slate-400 hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* AÇÃO RÁPIDA: OPÇÃO MAIS BARATA */}
+            {modalEscolhaProduto.grupo?.produtoMaisBarato && (
+              <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider bg-emerald-200/60 px-2 py-0.5 rounded">
+                    🏆 Opção Mais Econômica
+                  </span>
+                  <p className="font-semibold text-slate-800 text-xs mt-1 truncate">
+                    {modalEscolhaProduto.grupo.produtoMaisBarato.descricao_item}
+                  </p>
+                  <p className="text-xs text-emerald-800 font-bold">
+                    {formatCurrency(modalEscolhaProduto.grupo.precoMin)} /{modalEscolhaProduto.grupo.produtoMaisBarato.unidade}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSelecionarProdutoApelido(
+                      modalEscolhaProduto.grupo.produtoMaisBarato,
+                      modalEscolhaProduto
+                    )
+                  }
+                  className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer shrink-0 shadow-xs transition"
+                >
+                  Adicionar Mais Barato
+                </button>
+              </div>
+            )}
+
+            {/* LISTA DE TODAS AS OPÇÕES DESTE APELIDO */}
+            <div className="overflow-y-auto space-y-2 flex-1 pr-1">
+              {modalEscolhaProduto.grupo?.produtos?.map((prod, idx) => {
+                const precoUnit =
+                  Number(prod.preco_medio) > 0
+                    ? Number(prod.preco_medio)
+                    : Number(prod.ultimo_valor_unitario) || 0;
+                const isMaisBarato =
+                  prod.chave === modalEscolhaProduto.grupo?.produtoMaisBarato?.chave;
+
+                return (
+                  <div
+                    key={prod.chave || idx}
+                    className={`p-3 rounded-xl border transition flex items-center justify-between gap-3 ${
+                      isMaisBarato
+                        ? 'border-emerald-300 bg-emerald-50/20'
+                        : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <p className="font-semibold text-slate-900 text-xs">
+                          {prod.descricao_item}
+                        </p>
+                        {isMaisBarato && (
+                          <span className="text-[9px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.2 rounded shrink-0">
+                            Mais Barato
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 mt-1">
+                        <span>
+                          Preço Médio:{' '}
+                          <strong className="text-emerald-700">
+                            {formatCurrency(precoUnit)}
+                          </strong>
+                          /{prod.unidade}
+                        </span>
+                        <span>•</span>
+                        <span>
+                          Qtd Média:{' '}
+                          <strong>
+                            {prod.quantidade_media} {prod.unidade}
+                          </strong>
+                        </span>
+                        <span>•</span>
+                        <span>
+                          Último pago: {formatCurrency(prod.ultimo_valor_unitario)}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-0.5 truncate">
+                        {prod.ultimo_estabelecimento} • Comprado {prod.vezes_comprado}x ({prod.frequencia_texto || 'histórico'})
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleSelecionarProdutoApelido(prod, modalEscolhaProduto)
+                      }
+                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold cursor-pointer shrink-0 transition"
+                    >
+                      {modalEscolhaProduto.itemEmEdicaoId ? 'Usar Este' : 'Escolher Este'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setModalEscolhaProduto(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1552,6 +1693,7 @@ export default function App() {
     }
   });
   const [modalApelidoItem, setModalApelidoItem] = useState(null);
+  const [modalEscolhaProduto, setModalEscolhaProduto] = useState(null);
   const [draggedItemIndex, setDraggedItemIndex] = useState(null);
 
   const itensEnriquecidos = useMemo(() => {
@@ -2215,27 +2357,99 @@ export default function App() {
 
 
 
-  // Catálogo de produtos únicos para Supermercado ou Farmácia (usando SEMPRE Preço Médio e Quantidade Média)
+  // Agrupamento de itens por apelido ou nome amigável
+  const produtosAgrupadosPorApelido = useMemo(() => {
+    const grupos = new Map();
+
+    for (const prod of estatisticasItensCompleta) {
+      const temApelido = Boolean(prod.apelido && prod.apelido.trim());
+      const nomeExibicao = temApelido ? prod.apelido.trim() : prod.descricao_item;
+      const chaveGrupo = nomeExibicao.trim().toUpperCase();
+
+      if (!grupos.has(chaveGrupo)) {
+        grupos.set(chaveGrupo, {
+          chave: chaveGrupo,
+          nomeExibicao,
+          temApelido,
+          categoria_item: prod.categoria_item,
+          produtos: [prod],
+        });
+      } else {
+        const g = grupos.get(chaveGrupo);
+        g.produtos.push(prod);
+        if (temApelido) g.temApelido = true;
+      }
+    }
+
+    return Array.from(grupos.values()).map((grupo) => {
+      // Ordenar produtos do grupo pelo menor preço (preco_medio ou ultimo_valor_unitario)
+      const prodsOrdenados = [...grupo.produtos].sort((a, b) => {
+        const precoA =
+          Number(a.preco_medio) > 0
+            ? Number(a.preco_medio)
+            : Number(a.ultimo_valor_unitario) || 0;
+        const precoB =
+          Number(b.preco_medio) > 0
+            ? Number(b.preco_medio)
+            : Number(b.ultimo_valor_unitario) || 0;
+        return precoA - precoB;
+      });
+
+      const produtoMaisBarato = prodsOrdenados[0];
+      const precoMin =
+        Number(produtoMaisBarato.preco_medio) > 0
+          ? Number(produtoMaisBarato.preco_medio)
+          : Number(produtoMaisBarato.ultimo_valor_unitario) || 0;
+      const prodMaisCaro = prodsOrdenados[prodsOrdenados.length - 1];
+      const precoMax =
+        Number(prodMaisCaro.preco_medio) > 0
+          ? Number(prodMaisCaro.preco_medio)
+          : Number(prodMaisCaro.ultimo_valor_unitario) || 0;
+      const totalVezes = grupo.produtos.reduce(
+        (acc, p) => acc + (p.vezes_comprado || 1),
+        0
+      );
+
+      return {
+        ...grupo,
+        produtos: prodsOrdenados,
+        produtoMaisBarato,
+        precoMin,
+        precoMax,
+        totalVezes,
+        temMultiplos: prodsOrdenados.length > 1,
+      };
+    });
+  }, [estatisticasItensCompleta]);
+
+  // Catálogo agrupado por apelido para Supermercado ou Farmácia
   const catalogoProdutos = useMemo(() => {
-    let lista = [...estatisticasItensCompleta].sort(
+    let lista = [...produtosAgrupadosPorApelido].sort(
       (a, b) =>
-        b.vezes_comprado - a.vezes_comprado ||
-        a.descricao_item.localeCompare(b.descricao_item)
+        b.totalVezes - a.totalVezes ||
+        a.nomeExibicao.localeCompare(b.nomeExibicao)
     );
 
     if (catalogCategoryFilter !== 'TODAS') {
-      lista = lista.filter((p) => p.categoria_item === catalogCategoryFilter);
+      lista = lista.filter((g) =>
+        g.produtos.some((p) => p.categoria_item === catalogCategoryFilter)
+      );
     }
 
     const q = catalogSearch.trim().toLowerCase();
     if (!q) return lista;
     return lista.filter(
-      (p) =>
-        p.descricao_item.toLowerCase().includes(q) ||
-        (p.apelido && p.apelido.toLowerCase().includes(q)) ||
-        p.ultimo_estabelecimento.toLowerCase().includes(q)
+      (g) =>
+        g.nomeExibicao.toLowerCase().includes(q) ||
+        g.produtos.some(
+          (p) =>
+            p.descricao_item.toLowerCase().includes(q) ||
+            (p.apelido && p.apelido.toLowerCase().includes(q)) ||
+            (p.ultimo_estabelecimento &&
+              p.ultimo_estabelecimento.toLowerCase().includes(q))
+        )
     );
-  }, [estatisticasItensCompleta, catalogSearch, catalogCategoryFilter]);
+  }, [produtosAgrupadosPorApelido, catalogSearch, catalogCategoryFilter]);
 
   const historicoListasDoTipo = useMemo(() => {
     return historicoListas.filter((l) => l.tipo === currentListType);
@@ -4083,15 +4297,22 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
         ? Number(prod.preco_medio)
         : Number(prod.ultimo_valor_unitario) || 0;
 
+    const nomePrincipal = (prod.apelido || '').trim() || prod.descricao_item;
+
     setter((prev) => {
       const existingIdx = prev.findIndex(
         (i) =>
-          String(i.descricao_original || i.descricao_item || '').trim().toUpperCase() === prod.chave
+          String(i.apelido || i.descricao_item || '').trim().toUpperCase() ===
+            nomePrincipal.toUpperCase() ||
+          String(i.descricao_original || '').trim().toUpperCase() === prod.chave
       );
       if (existingIdx >= 0) {
         const updated = [...prev];
         updated[existingIdx] = {
           ...updated[existingIdx],
+          apelido: nomePrincipal,
+          descricao_item: nomePrincipal,
+          descricao_original: prod.descricao_item,
           quantidade: Number(
             (Number(updated[existingIdx].quantidade) + qtdMediaPadrao).toFixed(3)
           ),
@@ -4103,7 +4324,8 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
         ...prev,
         {
           id: crypto.randomUUID(),
-          descricao_item: prod.apelido || prod.descricao_item,
+          apelido: nomePrincipal,
+          descricao_item: nomePrincipal,
           descricao_original: prod.descricao_item,
           quantidade: qtdMediaPadrao,
           unidade: prod.unidade || 'un',
@@ -4114,20 +4336,91 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
       ];
     });
     showNotice(
-      `"${prod.descricao_item}" adicionado com Qtd Média (${qtdMediaPadrao} ${
+      `"${nomePrincipal}" adicionado com Qtd Média (${qtdMediaPadrao} ${
         prod.unidade || 'un'
       }) e Preço Médio (${formatCurrency(precoMedioPadrao)})!`
     );
   };
 
+  const handleSelecionarProdutoApelido = (prodEscolhido, modalData) => {
+    const precoMedio =
+      Number(prodEscolhido.preco_medio) > 0
+        ? Number(prodEscolhido.preco_medio)
+        : Number(prodEscolhido.ultimo_valor_unitario) || 0;
+    const qtdMedia =
+      Number(prodEscolhido.quantidade_media) > 0
+        ? Number(prodEscolhido.quantidade_media)
+        : 1;
+    const nomePrincipal =
+      (prodEscolhido.apelido || '').trim() ||
+      modalData?.grupo?.nomeExibicao ||
+      prodEscolhido.descricao_item;
+
+    if (modalData?.itemEmEdicaoId) {
+      setCurrentShoppingList((prev) =>
+        prev.map((it) =>
+          it.id === modalData.itemEmEdicaoId
+            ? {
+                ...it,
+                apelido: nomePrincipal,
+                descricao_item: nomePrincipal,
+                descricao_original: prodEscolhido.descricao_item,
+                quantidade: qtdMedia,
+                unidade: prodEscolhido.unidade || 'un',
+                valor_unitario: precoMedio,
+                estabelecimento_ref: `Preço médio (${prodEscolhido.vezes_comprado || 1}x) • ${prodEscolhido.ultimo_estabelecimento || ''}`,
+              }
+            : it
+        )
+      );
+      showNotice(
+        `Item atualizado para "${prodEscolhido.descricao_item}" (${formatCurrency(precoMedio)})!`
+      );
+    } else {
+      addFromCatalogToShoppingList(prodEscolhido);
+    }
+    setModalEscolhaProduto(null);
+  };
+
   const handleAddCustomShoppingItem = (e) => {
     e.preventDefault();
-    if (!customListItem.descricao_item.trim()) return;
+    const textoDigitado = customListItem.descricao_item.trim();
+    if (!textoDigitado) return;
+
+    // Verificar se corresponde a um grupo de apelido existente
+    const grupoCorrespondente = produtosAgrupadosPorApelido.find(
+      (g) =>
+        g.chave === textoDigitado.toUpperCase() ||
+        g.nomeExibicao.toUpperCase() === textoDigitado.toUpperCase()
+    );
+
+    if (grupoCorrespondente && grupoCorrespondente.temMultiplos) {
+      setModalEscolhaProduto({ grupo: grupoCorrespondente, itemEmEdicaoId: null });
+      setCustomListItem({
+        descricao_item: '',
+        quantidade: 1,
+        unidade: 'un',
+        valor_unitario: '',
+      });
+      return;
+    } else if (grupoCorrespondente && !grupoCorrespondente.temMultiplos) {
+      addFromCatalogToShoppingList(grupoCorrespondente.produtos[0]);
+      setCustomListItem({
+        descricao_item: '',
+        quantidade: 1,
+        unidade: 'un',
+        valor_unitario: '',
+      });
+      return;
+    }
+
     setCurrentShoppingList((prev) => [
       ...prev,
       {
         id: crypto.randomUUID(),
-        descricao_item: customListItem.descricao_item.trim(),
+        apelido: textoDigitado,
+        descricao_item: textoDigitado,
+        descricao_original: '',
         quantidade: Number(customListItem.quantidade) || 1,
         unidade: customListItem.unidade || 'un',
         valor_unitario: Number(customListItem.valor_unitario) || 0,
@@ -4280,21 +4573,30 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
 
     setAiListLoading(true);
     try {
-      const resumoEstatisticasCategoria = statsDaCategoria.slice(0, 120).map((s) => ({
-        item: s.descricao_item,
-        vezes_comprado: s.vezes_comprado,
-        frequencia: s.frequencia_texto,
-        quantidade_media: s.quantidade_media,
-        unidade: s.unidade,
-        preco_medio: s.preco_medio,
-        ultima_compra: s.ultima_data,
-      }));
+      const gruposDaCategoria = produtosAgrupadosPorApelido.filter((g) =>
+        g.produtos.some((p) => p.categoria_item === defaultCategoryForType)
+      );
+
+      const resumoEstatisticasCategoria = gruposDaCategoria.slice(0, 100).map((g) => {
+        const pMaisBarato = g.produtoMaisBarato;
+        return {
+          item: g.nomeExibicao,
+          apelido: g.temApelido ? g.nomeExibicao : '',
+          qtd_opcoes_cadastradas: g.produtos.length,
+          vezes_comprado: g.totalVezes,
+          quantidade_media: pMaisBarato.quantidade_media,
+          unidade: pMaisBarato.unidade,
+          preco_mais_barato: g.precoMin,
+          preco_medio_geral: pMaisBarato.preco_medio,
+          ultima_compra: pMaisBarato.ultima_data,
+        };
+      });
 
       const resumoListasSalvas = historicoListasDoTipo.slice(0, 10).map((l) => ({
         titulo: l.titulo,
         data: l.data_criacao,
         itens: (l.itens || []).map((it) => ({
-          item: it.descricao_item,
+          item: it.apelido || it.descricao_item,
           qtd: it.quantidade,
           unidade: it.unidade,
         })),
@@ -4305,7 +4607,7 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
           currentListType === 'FARMACIA' ? 'Farmácia e Saúde' : 'Supermercado e Alimentação'
         }.
 Hoje é ${new Date().toISOString().split('T')[0]}.
-Analise as estatísticas históricas de consumo extraídas das Notas Fiscais do usuário (contendo frequência, quantidade_media e preco_medio de cada item):
+Analise as estatísticas históricas de consumo extraídas das Notas Fiscais do usuário (identificando os produtos prioritariamente pelo seu apelido/nome usual, com frequência e histórico de preços):
 ${JSON.stringify(resumoEstatisticasCategoria)}
 
 E o histórico de listas anteriores:
@@ -4313,7 +4615,7 @@ ${JSON.stringify(resumoListasSalvas)}
 
 Tarefa:
 1. Faça uma breve análise do padrão de consumo do usuário (quais produtos ele mais consome, frequência/intervalo, e o que provavelmente precisa repor agora).
-2. Monte uma previsão de lista de compras ideal com os produtos recomendados, utilizando OBRIGATORIAMENTE a quantidade_media comprada e o preco_medio de cada produto no histórico.`,
+2. Monte uma previsão de lista de compras recomendada com os produtos ideais, identificando OBRIGATORIAMENTE cada produto pelo seu apelido ou nome usual informado nas estatísticas.`,
         response_format: [
           {
             type: 'text',
@@ -4350,29 +4652,69 @@ Tarefa:
       });
 
       const parsed = JSON.parse(interaction.output_text || '{}');
-      const mapaStats = new Map(
-        estatisticasItensCompleta.map((s) => [s.chave, s])
-      );
 
       const novosItens = (parsed.itens_previstos || []).map((it) => {
-        const chave = String(it.descricao_item || '').trim().toUpperCase();
-        const statMatch = mapaStats.get(chave);
-        const qtdFinal = statMatch
-          ? statMatch.quantidade_media
-          : Number(it.quantidade) || 1;
-        const precoFinal = statMatch
-          ? statMatch.preco_medio
-          : Number(it.valor_unitario) || 0;
+        const nomeBusca = String(it.descricao_item || '').trim().toUpperCase();
+
+        // 1. Encontrar o grupo correspondente por apelido / nome exibição
+        let grupoMatch = produtosAgrupadosPorApelido.find(
+          (g) =>
+            g.chave === nomeBusca ||
+            g.nomeExibicao.trim().toUpperCase() === nomeBusca
+        );
+
+        // 2. Se não achou exato, busca se algum produto dentro do grupo tem o nome
+        if (!grupoMatch) {
+          grupoMatch = produtosAgrupadosPorApelido.find((g) =>
+            g.produtos.some(
+              (p) =>
+                p.chave === nomeBusca ||
+                p.chave.includes(nomeBusca) ||
+                nomeBusca.includes(p.chave)
+            )
+          );
+        }
+
+        // Se produtos diferentes tiverem o mesmo apelido, na sugestão da IA escolhe o que estiver mais barato!
+        if (grupoMatch) {
+          const prodMaisBarato = grupoMatch.produtoMaisBarato;
+          const precoFinal =
+            Number(prodMaisBarato.preco_medio) > 0
+              ? Number(prodMaisBarato.preco_medio)
+              : Number(prodMaisBarato.ultimo_valor_unitario) ||
+                Number(it.valor_unitario) ||
+                0;
+          const qtdFinal =
+            Number(prodMaisBarato.quantidade_media) > 0
+              ? Number(prodMaisBarato.quantidade_media)
+              : Number(it.quantidade) || 1;
+
+          const refTexto = grupoMatch.temMultiplos
+            ? `🏆 Opção mais barata (${prodMaisBarato.descricao_item}) • ${formatCurrency(precoFinal)}/${prodMaisBarato.unidade} (vs até ${formatCurrency(grupoMatch.precoMax)})`
+            : `IA (Preço e Qtd Média): ${it.motivo_ia || prodMaisBarato.frequencia_texto || 'Reposição sugerida'}`;
+
+          return {
+            id: crypto.randomUUID(),
+            apelido: grupoMatch.nomeExibicao,
+            descricao_item: grupoMatch.nomeExibicao,
+            descricao_original: prodMaisBarato.descricao_item,
+            quantidade: qtdFinal,
+            unidade: prodMaisBarato.unidade || it.unidade || 'un',
+            valor_unitario: precoFinal,
+            estabelecimento_ref: refTexto,
+            checked: false,
+          };
+        }
 
         return {
           id: crypto.randomUUID(),
+          apelido: it.descricao_item,
           descricao_item: it.descricao_item,
-          quantidade: qtdFinal,
-          unidade: statMatch?.unidade || it.unidade || 'un',
-          valor_unitario: precoFinal,
-          estabelecimento_ref: `IA (Preço e Qtd Média): ${
-            it.motivo_ia || statMatch?.frequencia_texto || 'Reposição sugerida'
-          }`,
+          descricao_original: '',
+          quantidade: Number(it.quantidade) || 1,
+          unidade: it.unidade || 'un',
+          valor_unitario: Number(it.valor_unitario) || 0,
+          estabelecimento_ref: `IA: ${it.motivo_ia || 'Reposição sugerida'}`,
           checked: false,
         };
       });
@@ -4992,7 +5334,7 @@ ${JSON.stringify(itensDaNota)}`,
           </a>
 
           <div className="text-xs text-slate-400 flex items-center justify-between">
-            <span>Super&amp;Farma IAZ • Android</span>
+            <span>Super&amp;Farma IAZ • {APP_VERSION}</span>
             <button
               onClick={fetchAllData}
               title="Sincronizar dados"
@@ -5016,7 +5358,12 @@ ${JSON.stringify(itensDaNota)}`,
                 className="w-9 h-9 rounded-xl object-cover border border-emerald-400/30"
               />
               <div>
-                <h1 className="font-bold text-sm leading-tight">Super&amp;Farma IAZ</h1>
+                <div className="flex items-center gap-1.5">
+                  <h1 className="font-bold text-sm leading-tight">Super&amp;Farma IAZ</h1>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-semibold border border-slate-700/50">
+                    {APP_VERSION}
+                  </span>
+                </div>
                 <p className="text-[11px] text-slate-400">Mercado, Farmácia &amp; Notas IA</p>
               </div>
             </div>
@@ -7206,59 +7553,103 @@ ${JSON.stringify(itensDaNota)}`,
                         Nenhum item encontrado nesta categoria.
                       </div>
                     ) : (
-                      catalogoProdutos.map((prod) => (
+                      catalogoProdutos.map((grupo) => (
                         <div
-                          key={prod.chave}
-                          className="p-3 flex items-center justify-between gap-2 hover:bg-slate-50"
+                          key={grupo.chave}
+                          className="p-3 flex items-center justify-between gap-2 hover:bg-slate-50 transition"
                         >
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1 min-w-0">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 min-w-0">
                               <p className="font-semibold text-slate-800 text-xs truncate">
-                                {prod.apelido ? prod.apelido : prod.descricao_item}
+                                {grupo.nomeExibicao}
                               </p>
+                              {grupo.temMultiplos && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700 font-bold shrink-0">
+                                  {grupo.produtos.length} opções
+                                </span>
+                              )}
                               <button
                                 type="button"
                                 onClick={() =>
                                   setModalApelidoItem({
                                     id: null,
-                                    descricao_item: prod.descricao_item,
-                                    apelidoAtual: prod.apelido || '',
+                                    descricao_item: grupo.produtos[0].descricao_item,
+                                    apelidoAtual: grupo.temApelido ? grupo.nomeExibicao : '',
                                   })
                                 }
                                 className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-slate-200 rounded cursor-pointer shrink-0"
-                                title="Definir ou alterar apelido deste produto"
+                                title="Definir ou alterar apelido deste item"
                               >
                                 <Tag className="w-3 h-3" />
                               </button>
                             </div>
-                            {prod.apelido && (
-                              <p className="text-[10px] text-slate-400 truncate">
-                                Nota: {prod.descricao_item}
-                              </p>
+
+                            {grupo.temMultiplos ? (
+                              <div className="mt-0.5 space-y-0.5">
+                                <p className="text-[11px] text-slate-600 truncate">
+                                  Preço:{' '}
+                                  <strong className="text-emerald-700">
+                                    {formatCurrency(grupo.precoMin)}
+                                  </strong>
+                                  {grupo.precoMax > grupo.precoMin
+                                    ? ` a ${formatCurrency(grupo.precoMax)}`
+                                    : ''}{' '}
+                                  ({grupo.produtos[0].unidade || 'un'})
+                                </p>
+                                <p className="text-[10px] text-slate-500 truncate">
+                                  🏆 Mais barato: <strong>{grupo.produtoMaisBarato.descricao_item}</strong> ({formatCurrency(grupo.precoMin)})
+                                </p>
+                                <p className="text-[10px] text-slate-400 truncate">
+                                  {grupo.totalVezes}x comprado • {grupo.produtos.length} marcas registradas
+                                </p>
+                              </div>
+                            ) : (
+                              <div className="mt-0.5 space-y-0.5">
+                                {grupo.temApelido && (
+                                  <p className="text-[10px] text-slate-400 truncate">
+                                    Nota: {grupo.produtos[0].descricao_item}
+                                  </p>
+                                )}
+                                <p className="text-[11px] text-slate-600 truncate">
+                                  Preço Médio:{' '}
+                                  <strong className="text-emerald-700">
+                                    {formatCurrency(grupo.produtos[0].preco_medio)}
+                                  </strong>{' '}
+                                  /{grupo.produtos[0].unidade} • Qtd Média:{' '}
+                                  <strong>
+                                    {grupo.produtos[0].quantidade_media} {grupo.produtos[0].unidade}
+                                  </strong>
+                                </p>
+                                <p className="text-[10px] text-slate-400 truncate">
+                                  Comprado {grupo.produtos[0].vezes_comprado}x ({grupo.produtos[0].frequencia_texto}) • Últ:{' '}
+                                  {formatDateBR(grupo.produtos[0].ultima_data)}
+                                </p>
+                              </div>
                             )}
-                            <p className="text-[11px] text-slate-600 truncate">
-                              Preço Médio:{' '}
-                              <strong className="text-emerald-700">
-                                {formatCurrency(prod.preco_medio)}
-                              </strong>{' '}
-                              /{prod.unidade} • Qtd Média:{' '}
-                              <strong>
-                                {prod.quantidade_media} {prod.unidade}
-                              </strong>
-                            </p>
-                            <p className="text-[10px] text-slate-400 truncate">
-                              Comprado {prod.vezes_comprado}x ({prod.frequencia_texto}) • Últ:{' '}
-                              {formatDateBR(prod.ultima_data)}
-                            </p>
                           </div>
+
                           <button
                             type="button"
-                            onClick={() => addFromCatalogToShoppingList(prod)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shrink-0 cursor-pointer"
-                            title="Adicionar com Preço Médio e Quantidade Média"
+                            onClick={() => {
+                              if (grupo.temMultiplos) {
+                                setModalEscolhaProduto({ grupo, itemEmEdicaoId: null });
+                              } else {
+                                addFromCatalogToShoppingList(grupo.produtos[0]);
+                              }
+                            }}
+                            className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-white text-xs font-semibold shrink-0 cursor-pointer transition ${
+                              grupo.temMultiplos
+                                ? 'bg-indigo-600 hover:bg-indigo-700 shadow-xs'
+                                : 'bg-emerald-600 hover:bg-emerald-700'
+                            }`}
+                            title={
+                              grupo.temMultiplos
+                                ? 'Escolher qual produto com este apelido adicionar'
+                                : 'Adicionar com Preço Médio e Quantidade Média'
+                            }
                           >
                             <Plus className="w-3.5 h-3.5" />
-                            <span>Lista</span>
+                            <span>{grupo.temMultiplos ? 'Escolher' : 'Lista'}</span>
                           </button>
                         </div>
                       ))
@@ -7438,7 +7829,7 @@ ${JSON.stringify(itensDaNota)}`,
                                   }
                                   className="mt-1 rounded text-emerald-600"
                                 />
-                                <div>
+                                <div className="space-y-0.5">
                                   <p
                                     className={`font-semibold text-sm ${
                                       item.checked
@@ -7446,13 +7837,46 @@ ${JSON.stringify(itensDaNota)}`,
                                         : 'text-slate-900'
                                     }`}
                                   >
-                                    {item.descricao_item}
+                                    {item.apelido || item.descricao_item}
                                   </p>
+                                  {item.descricao_original &&
+                                    item.descricao_original !== (item.apelido || item.descricao_item) && (
+                                      <p className="text-[11px] text-slate-500 font-medium truncate">
+                                        Nota: {item.descricao_original}
+                                      </p>
+                                  )}
                                   {item.estabelecimento_ref && (
                                     <p className="text-[11px] text-slate-400">
                                       {item.estabelecimento_ref}
                                     </p>
                                   )}
+                                  {(() => {
+                                    const chaveItem = (item.apelido || item.descricao_item || '').trim().toUpperCase();
+                                    const grupoItem = produtosAgrupadosPorApelido.find(
+                                      (g) => g.chave === chaveItem || g.produtos.some((p) => p.chave === chaveItem)
+                                    );
+                                    if (grupoItem && grupoItem.temMultiplos) {
+                                      return (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            setModalEscolhaProduto({
+                                              grupo: grupoItem,
+                                              itemEmEdicaoId: item.id,
+                                            });
+                                          }}
+                                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded-md mt-1 cursor-pointer transition"
+                                          title="Trocar entre produtos cadastrados com este mesmo apelido"
+                                        >
+                                          <ArrowLeftRight className="w-3 h-3" />
+                                          <span>{grupoItem.produtos.length} opções cadastradas (Trocar)</span>
+                                        </button>
+                                      );
+                                    }
+                                    return null;
+                                  })()}
                                 </div>
                               </label>
 
