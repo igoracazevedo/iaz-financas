@@ -1231,6 +1231,7 @@ export default function App() {
     return [...CATEGORIAS_PADRAO];
   });
   const [configCategoriasDbId, setConfigCategoriasDbId] = useState(null);
+  const [configApelidosDbId, setConfigApelidosDbId] = useState(null);
   const [novaCategoriaInput, setNovaCategoriaInput] = useState('');
   const [editandoCategoriaOriginal, setEditandoCategoriaOriginal] = useState(null);
   const [editandoCategoriaNovoNome, setEditandoCategoriaNovoNome] = useState('');
@@ -1542,6 +1543,7 @@ export default function App() {
       console.warn(e);
     }
 
+    // Atualiza itens da nota em memória
     setItensNota((prev) =>
       prev.map((i) =>
         String(i.descricao_item || '').trim().toUpperCase() === chave
@@ -1550,19 +1552,76 @@ export default function App() {
       )
     );
 
+    // Atualiza listas de compras atual em memória e salva no localStorage
+    setShoppingListSupermercado((prev) => {
+      const updated = prev.map((it) => {
+        const ch = String(it.descricao_original || it.descricao_item || '').trim().toUpperCase();
+        if (ch === chave) {
+          return {
+            ...it,
+            apelido: apelido || '',
+            descricao_item: apelido || it.descricao_original || it.descricao_item,
+            descricao_original: it.descricao_original || it.descricao_item,
+          };
+        }
+        return it;
+      });
+      try {
+        localStorage.setItem('iaz_shopping_list_supermercado', JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
+    });
+
+    setShoppingListFarmacia((prev) => {
+      const updated = prev.map((it) => {
+        const ch = String(it.descricao_original || it.descricao_item || '').trim().toUpperCase();
+        if (ch === chave) {
+          return {
+            ...it,
+            apelido: apelido || '',
+            descricao_item: apelido || it.descricao_original || it.descricao_item,
+            descricao_original: it.descricao_original || it.descricao_item,
+          };
+        }
+        return it;
+      });
+      try {
+        localStorage.setItem('iaz_shopping_list_farmacia', JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
+    });
+
+    // Salva no Supabase na tabela contas_bancarias (__CONFIG_APELIDOS__)
     if (supabase) {
       try {
-        await supabase
-          .from('itens_nota')
-          .update({ apelido: apelido || null })
-          .eq('descricao_item', descricaoItem);
+        const payloadJson = JSON.stringify(novoMapa);
+        if (configApelidosDbId) {
+          await supabase
+            .from('contas_bancarias')
+            .update({ nome_banco: payloadJson })
+            .eq('id', configApelidosDbId);
+        } else {
+          const { data: insertedRow } = await supabase
+            .from('contas_bancarias')
+            .insert([
+              {
+                nome_banco: payloadJson,
+                tipo_conta: '__CONFIG_APELIDOS__',
+                saldo_inicial: 0,
+                ativo: false,
+              },
+            ])
+            .select()
+            .single();
+          if (insertedRow?.id) setConfigApelidosDbId(insertedRow.id);
+        }
       } catch (err) {
-        console.warn('Apelido salvo apenas localmente:', err);
+        console.warn('Erro ao salvar apelidos no Supabase:', err);
       }
     }
 
     setModalApelidoItem(null);
-    showNotice(apelido ? `Apelido "${apelido}" salvo!` : 'Apelido removido!');
+    showNotice(apelido ? `Apelido "${apelido}" salvo e sincronizado!` : 'Apelido removido!');
   };
 
   const currentMeta = activeListMeta[currentListType];
@@ -1617,6 +1676,7 @@ export default function App() {
             '__LISTA_SUPERMERCADO__',
             '__LISTA_FARMACIA__',
             '__CONFIG_CATEGORIAS__',
+            '__CONFIG_APELIDOS__',
           ])
           .order('created_at', { ascending: false }),
       ]);
@@ -1651,9 +1711,35 @@ export default function App() {
         }
       }
 
+      // Carrega mapeamento de apelidos salvo no Supabase (sincroniza todos os dispositivos e abas)
+      const rowApelidos = (listasRawData || []).find(
+        (r) => r.tipo_conta === '__CONFIG_APELIDOS__'
+      );
+      if (rowApelidos) {
+        setConfigApelidosDbId(rowApelidos.id);
+        try {
+          const parsedApelidos = JSON.parse(rowApelidos.nome_banco);
+          if (parsedApelidos && typeof parsedApelidos === 'object') {
+            setItensApelidosMap((prev) => {
+              const merged = { ...parsedApelidos, ...prev };
+              try {
+                localStorage.setItem('iaz_itens_apelidos', JSON.stringify(merged));
+              } catch (e) {}
+              return merged;
+            });
+          }
+        } catch (e) {
+          console.warn('Erro ao decodificar apelidos:', e);
+        }
+      }
+
       // Decodifica o histórico de listas de compras salvo no banco
       const parsedListas = (listasRawData || [])
-        .filter((row) => row.tipo_conta !== '__CONFIG_CATEGORIAS__')
+        .filter(
+          (row) =>
+            row.tipo_conta !== '__CONFIG_CATEGORIAS__' &&
+            row.tipo_conta !== '__CONFIG_APELIDOS__'
+        )
         .map((row) => {
           try {
             const obj = JSON.parse(row.nome_banco);
@@ -2008,6 +2094,7 @@ export default function App() {
       return {
         chave: entry.chave,
         descricao_item: entry.descricao_item,
+        apelido: (itemApelidosMap[entry.chave] || entry.apelido || '').trim(),
         unidade: entry.unidade,
         categoria_item: entry.categoria_item,
         ultimo_valor_unitario: entry.ultimo_valor_unitario,
@@ -2026,7 +2113,7 @@ export default function App() {
         estabelecimentos: Array.from(entry.estabelecimentos_set),
       };
     });
-  }, [itensEnriquecidos]);
+  }, [itensEnriquecidos, itemApelidosMap]);
 
   const estatisticasFiltradas = useMemo(() => {
     let lista = [...estatisticasItensCompleta];
@@ -2362,8 +2449,10 @@ export default function App() {
     const grupos = new Map();
 
     for (const prod of estatisticasItensCompleta) {
-      const temApelido = Boolean(prod.apelido && prod.apelido.trim());
-      const nomeExibicao = temApelido ? prod.apelido.trim() : prod.descricao_item;
+      const chaveProd = String(prod.chave || prod.descricao_item || '').trim().toUpperCase();
+      const apelidoEfetivo = (itemApelidosMap[chaveProd] || prod.apelido || '').trim();
+      const temApelido = Boolean(apelidoEfetivo);
+      const nomeExibicao = temApelido ? apelidoEfetivo : prod.descricao_item;
       const chaveGrupo = nomeExibicao.trim().toUpperCase();
 
       if (!grupos.has(chaveGrupo)) {
@@ -2376,7 +2465,9 @@ export default function App() {
         });
       } else {
         const g = grupos.get(chaveGrupo);
-        g.produtos.push(prod);
+        if (!g.produtos.some((p) => p.chave === prod.chave)) {
+          g.produtos.push(prod);
+        }
         if (temApelido) g.temApelido = true;
       }
     }
@@ -2420,7 +2511,7 @@ export default function App() {
         temMultiplos: prodsOrdenados.length > 1,
       };
     });
-  }, [estatisticasItensCompleta]);
+  }, [estatisticasItensCompleta, itemApelidosMap]);
 
   // Catálogo agrupado por apelido para Supermercado ou Farmácia
   const catalogoProdutos = useMemo(() => {
@@ -3045,7 +3136,7 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
 
   const handleImprimirOuBaixarCupomDigital = (nf) => {
     if (!nf) return;
-    const itensDaNota = itensNota.filter((i) => i.nota_id === nf.id);
+    const itensDaNota = itensEnriquecidos.filter((i) => i.nota_id === nf.id);
     const vals = calcularValoresNota(nf);
     const printWindow = window.open('', '_blank', 'width=800,height=900');
     if (!printWindow) {
@@ -7829,34 +7920,60 @@ ${JSON.stringify(itensDaNota)}`,
                                   }
                                   className="mt-1 rounded text-emerald-600"
                                 />
-                                <div className="space-y-0.5">
-                                  <p
-                                    className={`font-semibold text-sm ${
-                                      item.checked
-                                        ? 'line-through text-slate-400'
-                                        : 'text-slate-900'
-                                    }`}
-                                  >
-                                    {item.apelido || item.descricao_item}
-                                  </p>
-                                  {item.descricao_original &&
-                                    item.descricao_original !== (item.apelido || item.descricao_item) && (
-                                      <p className="text-[11px] text-slate-500 font-medium truncate">
-                                        Nota: {item.descricao_original}
-                                      </p>
-                                  )}
-                                  {item.estabelecimento_ref && (
-                                    <p className="text-[11px] text-slate-400">
-                                      {item.estabelecimento_ref}
-                                    </p>
-                                  )}
-                                  {(() => {
-                                    const chaveItem = (item.apelido || item.descricao_item || '').trim().toUpperCase();
-                                    const grupoItem = produtosAgrupadosPorApelido.find(
-                                      (g) => g.chave === chaveItem || g.produtos.some((p) => p.chave === chaveItem)
-                                    );
-                                    if (grupoItem && grupoItem.temMultiplos) {
-                                      return (
+                                {(() => {
+                                  const chaveOriginal = String(item.descricao_original || item.descricao_item || '').trim().toUpperCase();
+                                  const apelidoCadastrado = (itemApelidosMap[chaveOriginal] || item.apelido || '').trim();
+                                  const nomeExibicao = apelidoCadastrado || item.descricao_item;
+                                  const grupoItem = produtosAgrupadosPorApelido.find(
+                                    (g) =>
+                                      g.chave === nomeExibicao.trim().toUpperCase() ||
+                                      g.produtos.some((p) => p.chave === chaveOriginal)
+                                  );
+
+                                  return (
+                                    <div className="space-y-1 min-w-0 flex-1">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <p
+                                          className={`font-bold text-sm ${
+                                            item.checked
+                                              ? 'line-through text-slate-400'
+                                              : 'text-slate-900'
+                                          }`}
+                                        >
+                                          {nomeExibicao}
+                                        </p>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            setModalApelidoItem({
+                                              id: item.id,
+                                              descricao_item: item.descricao_original || item.descricao_item,
+                                              apelidoAtual: apelidoCadastrado,
+                                            });
+                                          }}
+                                          className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-slate-200 rounded cursor-pointer shrink-0 transition"
+                                          title="Definir ou alterar apelido deste item"
+                                        >
+                                          <Tag className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+
+                                      {item.descricao_original &&
+                                        item.descricao_original !== nomeExibicao && (
+                                          <p className="text-[11px] text-slate-500 font-medium truncate">
+                                            Nota: {item.descricao_original}
+                                          </p>
+                                      )}
+
+                                      {item.estabelecimento_ref && (
+                                        <p className="text-[11px] text-slate-400">
+                                          {item.estabelecimento_ref}
+                                        </p>
+                                      )}
+
+                                      {grupoItem && grupoItem.temMultiplos && (
                                         <button
                                           type="button"
                                           onClick={(e) => {
@@ -7867,17 +7984,16 @@ ${JSON.stringify(itensDaNota)}`,
                                               itemEmEdicaoId: item.id,
                                             });
                                           }}
-                                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded-md mt-1 cursor-pointer transition"
-                                          title="Trocar entre produtos cadastrados com este mesmo apelido"
+                                          className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg mt-1 cursor-pointer transition border border-indigo-200 shadow-2xs"
+                                          title="Escolher entre os diferentes produtos cadastrados com este apelido"
                                         >
-                                          <ArrowLeftRight className="w-3 h-3" />
-                                          <span>{grupoItem.produtos.length} opções cadastradas (Trocar)</span>
+                                          <ArrowLeftRight className="w-3.5 h-3.5" />
+                                          <span>{grupoItem.produtos.length} opções com este apelido (Escolher produto)</span>
                                         </button>
-                                      );
-                                    }
-                                    return null;
-                                  })()}
-                                </div>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                               </label>
 
                               <div className="flex items-center justify-between sm:justify-end gap-2">
