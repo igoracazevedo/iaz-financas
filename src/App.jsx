@@ -5,6 +5,7 @@ import jsQR from 'jsqr';
 import {
   ArrowLeftRight,
   ArrowUpDown,
+  Copy,
   CreditCard,
   ArrowDownCircle,
   Receipt,
@@ -1309,6 +1310,10 @@ export default function App() {
   });
 
   // Estados do Modo Compras no Supermercado (Celular / Ao Vivo)
+  const [secaoHistoricoListasAberta, setSecaoHistoricoListasAberta] = useState(true);
+  const [isScanningQrCompras, setIsScanningQrCompras] = useState(false);
+  const qrVideoComprasRef = React.useRef(null);
+  const qrStreamComprasRef = React.useRef(null);
   const [modoComprasFiltro, setModoComprasFiltro] = useState('TODOS');
   const [comprasListaSelecionadaId, setComprasListaSelecionadaId] = useState('ATUAL');
   const [notaVinculadaSelecionadaId, setNotaVinculadaSelecionadaId] = useState('');
@@ -4700,6 +4705,280 @@ Tarefa:
   };
 
 
+
+  // ==========================================
+  // FUNÇÃO PARA DUPLICAR LISTA DE COMPRAS
+  // ==========================================
+  const handleDuplicarLista = async (hist) => {
+    const hoje = new Date().toISOString().split('T')[0];
+    const novoTitulo = `${hist.titulo || 'Lista'} (Cópia - ${formatDateBR(hoje)})`;
+
+    const itensClonados = (hist.itens || []).map((it) => ({
+      ...it,
+      id: crypto.randomUUID(),
+      checked: false,
+    }));
+
+    const totalPrevisto = itensClonados.reduce(
+      (acc, i) => acc + (Number(i.quantidade) || 0) * (Number(i.valor_unitario) || 0),
+      0
+    );
+
+    const tipoTag =
+      hist.tipo === 'FARMACIA' ? '__LISTA_FARMACIA__' : '__LISTA_SUPERMERCADO__';
+
+    const payloadJson = {
+      tipo: hist.tipo || currentListType,
+      titulo: novoTitulo,
+      data_criacao: hoje,
+      status: 'ABERTA',
+      total_previsto: totalPrevisto,
+      analise_ia: hist.analise_ia || '',
+      itens: itensClonados,
+      conferencia: null,
+    };
+
+    try {
+      if (supabase) {
+        const { data, error } = await supabase
+          .from('contas_bancarias')
+          .insert([
+            {
+              nome_banco: JSON.stringify(payloadJson),
+              tipo_conta: tipoTag,
+              saldo_inicial: totalPrevisto,
+              ativo: false,
+            },
+          ])
+          .select()
+          .single();
+        if (error) throw error;
+        updateCurrentMeta({ id: data.id, titulo: novoTitulo, analise_ia: hist.analise_ia || '', conferencia: null });
+      } else {
+        updateCurrentMeta({ id: null, titulo: novoTitulo, analise_ia: hist.analise_ia || '', conferencia: null });
+      }
+
+      setCurrentShoppingList(itensClonados);
+      showNotice(`Lista duplicada como "${novoTitulo}"! Itens prontos para novas compras.`);
+      fetchAllData();
+    } catch (err) {
+      console.error('Erro ao duplicar lista:', err);
+      setCurrentShoppingList(itensClonados);
+      updateCurrentMeta({ id: null, titulo: novoTitulo, analise_ia: hist.analise_ia || '', conferencia: null });
+      showNotice('Lista duplicada na tela com sucesso!');
+    }
+  };
+
+  // ==========================================
+  // SCANNER DE QR CODE PARA O MODO COMPRAS
+  // ==========================================
+  const stopQrCameraCompras = () => {
+    if (qrStreamComprasRef.current) {
+      qrStreamComprasRef.current.getTracks().forEach((track) => track.stop());
+      qrStreamComprasRef.current = null;
+    }
+    setIsScanningQrCompras(false);
+  };
+
+  const startQrCameraCompras = async () => {
+    setIsScanningQrCompras(true);
+    showNotice('Abrindo câmera para leitura de QR Code...');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+
+      qrStreamComprasRef.current = stream;
+      if (qrVideoComprasRef.current) {
+        qrVideoComprasRef.current.srcObject = stream;
+        qrVideoComprasRef.current.play().catch(() => {});
+      }
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+      const interval = setInterval(async () => {
+        if (!qrStreamComprasRef.current || !qrVideoComprasRef.current) {
+          clearInterval(interval);
+          return;
+        }
+
+        const video = qrVideoComprasRef.current;
+        if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+          return;
+        }
+
+        try {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const code = jsQR(imageData.data, imageData.width, imageData.height, {
+            inversionAttempts: 'dontInvert',
+          });
+
+          if (code && code.data) {
+            clearInterval(interval);
+            const snapshotDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            stopQrCameraCompras();
+            showNotice('QR Code lido com sucesso! Processando nota e conferindo com sua lista...');
+            await handleProcessarQrCodeCompras(code.data, snapshotDataUrl);
+            return;
+          }
+        } catch {
+          // continua escaneando
+        }
+      }, 300);
+    } catch (err) {
+      setIsScanningQrCompras(false);
+      showNotice(`Não foi possível abrir a câmera ao vivo (${err.message}). Use o botão "Foto do QR Code".`, 'error');
+    }
+  };
+
+  const handleProcessarQrCodeCompras = async (rawTarget, snapshotDataUrl = null) => {
+    setOcrLoading(true);
+    try {
+      const info = decodificarChaveOuQrCode(rawTarget);
+      let nomeEstabelecimento = '';
+      let cnpjFormatado = info?.cnpjFormatado || '';
+      let itensExtraidos = [];
+      let valorTotalFinal = Number(info?.valorExtraido) || 0;
+      let descontoFinal = 0;
+      let dataEmissaoFinal = info?.valida
+        ? `${info.anoMes}-01`
+        : new Date().toISOString().split('T')[0];
+
+      // 1. Tenta consulta direta na SEFAZ
+      const resultadoSefaz = await consultarDadosCompletosSefaz(rawTarget);
+      if (resultadoSefaz?.htmlOuXml) {
+        const dadosParsed = extrairDadosHtmlNfce(resultadoSefaz.htmlOuXml);
+        if (dadosParsed) {
+          if (dadosParsed.itens && dadosParsed.itens.length > 0) {
+            itensExtraidos = dadosParsed.itens;
+          }
+          if (dadosParsed.valorTotal > 0) valorTotalFinal = dadosParsed.valorTotal;
+          if (dadosParsed.desconto > 0) descontoFinal = dadosParsed.desconto;
+          if (dadosParsed.dataEmissao) dataEmissaoFinal = dadosParsed.dataEmissao;
+          if (dadosParsed.estabelecimento) nomeEstabelecimento = dadosParsed.estabelecimento;
+        }
+      }
+
+      // 2. Se temos imagem ou texto da SEFAZ, refina com Gemini IA
+      if ((itensExtraidos.length === 0 || valorTotalFinal === 0) && effectiveGeminiKey) {
+        try {
+          const prompt = `Analise esta chave ou dados da nota fiscal NFC-e: ${info?.chave44 || rawTarget}. Extraia estabelecimento, CNPJ, data_emissao, valor_total, desconto e todos os itens.`;
+          const base64Img = snapshotDataUrl?.includes(',') ? snapshotDataUrl.split(',')[1] : null;
+          let parsed;
+          if (base64Img) {
+            parsed = await extrairNotaViaGemini(base64Img, 'image/jpeg', '', prompt);
+          } else if (resultadoSefaz?.textoCompleto) {
+            parsed = await extrairNotaViaGemini('', 'text/plain', resultadoSefaz.textoCompleto, prompt);
+          }
+          if (parsed) {
+            if (parsed.itens && parsed.itens.length > 0) itensExtraidos = parsed.itens;
+            if (Number(parsed.valor_total) > 0) valorTotalFinal = Number(parsed.valor_total);
+            if (Number(parsed.desconto) > 0) descontoFinal = Number(parsed.desconto);
+            if (parsed.estabelecimento && !nomeEstabelecimento) nomeEstabelecimento = parsed.estabelecimento;
+            if (parsed.data_emissao) dataEmissaoFinal = parsed.data_emissao;
+          }
+        } catch (e) {
+          console.warn('Fallback Gemini no QR:', e);
+        }
+      }
+
+      const notaParaSalvar = {
+        estabelecimento: nomeEstabelecimento || 'Supermercado',
+        cnpj: cnpjFormatado,
+        data_emissao: dataEmissaoFinal,
+        valor_total: valorTotalFinal,
+        desconto: descontoFinal,
+        forma_pagamento: 'PIX',
+        chave_acesso: info?.chave44 || rawTarget,
+        categoria_geral: 'Alimentação & Supermercado',
+        cartao_id: '',
+        status_pagamento: 'CONFIRMADO',
+        itens: (itensExtraidos || []).map((it) => ({
+          ...it,
+          apelido: (itemApelidosMap[String(it.descricao_item || '').trim().toUpperCase()] || it.apelido || '').trim(),
+          categoria_item: 'Alimentação & Supermercado',
+          garantia_meses: Number(it.garantia_meses) || 0,
+        })),
+      };
+
+      // 1. Salva nota no banco de dados geral (notas_fiscais, itens_nota, transacoes)
+      const notaId = await salvarNotaCompletaNoBanco(notaParaSalvar, snapshotDataUrl);
+      notaParaSalvar.id = notaId;
+
+      // 2. Executa a conferência por IA entre a lista e a nota
+      const conf = await executarConferenciaComNotaIA(notaParaSalvar, shoppingListSupermercado);
+
+      // 3. Salva a lista como conferida e vinculada no histórico
+      await handleSaveListToHistory(conf);
+
+      // 4. Atualiza os dados gerais
+      await fetchAllData();
+
+      const totalPlanejado = shoppingListSupermercado.reduce(
+        (acc, i) => acc + (Number(i.quantidade) || 0) * (Number(i.valor_unitario) || 0),
+        0
+      );
+
+      setConferenciaResultadoModoCompras({
+        nota: notaParaSalvar,
+        conferencia: conf,
+        totalPlanejado,
+      });
+
+      showNotice('QR Code processado! Nota cadastrada no histórico geral e vinculada à sua lista!');
+    } catch (err) {
+      console.error('Erro ao processar QR Code:', err);
+      showNotice(`Erro ao processar QR Code: ${err.message}`, 'error');
+    } finally {
+      setOcrLoading(false);
+    }
+  };
+
+  const handleQrFotoCompras = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setOcrLoading(true);
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      const img = new Image();
+      img.src = dataUrl;
+      await new Promise((resolve) => (img.onload = resolve));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const qr = jsQR(imgData.data, imgData.width, imgData.height);
+
+      if (qr && qr.data) {
+        showNotice('QR Code detectado na foto! Processando...');
+        await handleProcessarQrCodeCompras(qr.data, dataUrl);
+      } else {
+        // Se não achou QR Code na foto, faz o OCR completo da nota via IA
+        showNotice('Lendo cupom fiscal via Inteligência Artificial...');
+        await handleFinalizarComprovanteModoCompras({ target: { files: [file], value: '' } });
+      }
+    } catch (err) {
+      showNotice(`Erro ao ler foto do QR: ${err.message}`, 'error');
+    } finally {
+      setOcrLoading(false);
+      e.target.value = '';
+    }
+  };
+
   // ==========================================
   // FUNÇÕES DO MODO COMPRAS NO SUPERMERCADO (CELULAR)
   // ==========================================
@@ -7960,9 +8239,18 @@ ${JSON.stringify(itensDaNota)}`,
                     A nota será lida por IA, vinculada a esta lista e adicionada automaticamente ao histórico de todas as notas do app!
                   </p>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                    <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-white text-emerald-800 font-bold text-xs sm:text-sm shadow-md hover:bg-emerald-50 cursor-pointer transition">
-                      <Camera className="w-4 h-4 text-emerald-700" />
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={startQrCameraCompras}
+                      className="flex items-center justify-center gap-2 px-3.5 py-3 rounded-2xl bg-white text-emerald-900 font-bold text-xs sm:text-sm shadow-md hover:bg-emerald-50 cursor-pointer transition"
+                    >
+                      <QrCode className="w-4 h-4 text-emerald-700" />
+                      <span>Ler QR Code</span>
+                    </button>
+
+                    <label className="flex items-center justify-center gap-2 px-3.5 py-3 rounded-2xl bg-emerald-800/90 hover:bg-emerald-800 text-white font-bold text-xs sm:text-sm shadow-md cursor-pointer transition border border-white/20">
+                      <Camera className="w-4 h-4" />
                       <span>Tirar Foto da Nota</span>
                       <input
                         type="file"
@@ -7973,9 +8261,9 @@ ${JSON.stringify(itensDaNota)}`,
                       />
                     </label>
 
-                    <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-emerald-800/80 hover:bg-emerald-800 text-white font-bold text-xs sm:text-sm shadow-sm cursor-pointer transition border border-white/20">
+                    <label className="flex items-center justify-center gap-2 px-3.5 py-3 rounded-2xl bg-teal-800/90 hover:bg-teal-800 text-white font-bold text-xs sm:text-sm shadow-sm cursor-pointer transition border border-white/20">
                       <Upload className="w-4 h-4" />
-                      <span>Enviar Foto ou PDF</span>
+                      <span>Enviar Foto / PDF</span>
                       <input
                         type="file"
                         accept="image/*,application/pdf"
@@ -7984,6 +8272,57 @@ ${JSON.stringify(itensDaNota)}`,
                       />
                     </label>
                   </div>
+
+                  {/* MODAL / OVERLAY DA CÂMERA AO VIVO PARA ESCANEAR QR CODE */}
+                  {isScanningQrCompras && (
+                    <div className="p-4 rounded-2xl bg-slate-900 text-white space-y-3 animate-in fade-in">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <QrCode className="w-4 h-4 text-emerald-400" />
+                          <span className="text-xs font-bold">Aponte para o QR Code da Nota Fiscal</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={stopQrCameraCompras}
+                          className="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <div className="relative rounded-xl overflow-hidden bg-black flex items-center justify-center min-h-[220px]">
+                        <video
+                          ref={qrVideoComprasRef}
+                          autoPlay
+                          playsInline
+                          muted
+                          className="w-full max-h-72 object-cover"
+                        />
+                        <div className="absolute inset-0 pointer-events-none border-2 border-emerald-400/60 rounded-xl flex items-center justify-center">
+                          <div className="w-48 h-48 border-2 border-dashed border-emerald-400 rounded-lg animate-pulse" />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 pt-1">
+                        <label className="text-xs text-slate-300 hover:text-white underline cursor-pointer">
+                          <span>Foto do QR Code da Galeria</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleQrFotoCompras}
+                            className="hidden"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={stopQrCameraCompras}
+                          className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold cursor-pointer"
+                        >
+                          Fechar Câmera
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* VINCULAR NOTA JÁ CADASTRADA */}
                   {notasFiscais.length > 0 && (
@@ -8110,6 +8449,165 @@ ${JSON.stringify(itensDaNota)}`,
                     </p>
                     <p className="leading-relaxed">{currentMeta.analise_ia}</p>
                   </div>
+                )}
+              </div>
+
+              {/* HISTÓRICO DE LISTAS DE COMPRAS — MOVIDO PARA O TOPO */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0">
+                      <History className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-slate-900 text-sm">
+                        Histórico de Listas de Compras ({historicoListasDoTipo.length})
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Suas listas salvas e encerradas — Toque em <strong>Duplicar</strong> para recomeçar com os mesmos itens
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setSecaoHistoricoListasAberta((prev) => !prev)}
+                    className="text-xs font-bold text-emerald-700 hover:text-emerald-800 px-3 py-1.5 rounded-xl bg-emerald-50 cursor-pointer transition flex items-center gap-1 shrink-0"
+                  >
+                    <span>{secaoHistoricoListasAberta ? 'Recolher' : 'Expandir'}</span>
+                    {secaoHistoricoListasAberta ? (
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                </div>
+
+                {secaoHistoricoListasAberta && (
+                  <>
+                    {historicoListasDoTipo.length === 0 ? (
+                      <div className="p-6 text-center text-slate-400 text-xs">
+                        Nenhuma lista salva no histórico ainda. Quando você salvar ou finalizar uma compra, ela aparecerá aqui!
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-slate-100">
+                        {historicoListasDoTipo.map((hist) => {
+                          const isExp = expandedHistoryListId === hist.db_id;
+                          const conf = hist.conferencia;
+                          return (
+                            <div key={hist.db_id} className="py-3 sm:px-2">
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="font-bold text-slate-900 text-sm">
+                                      {hist.titulo}
+                                    </p>
+                                    <span
+                                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                        hist.status === 'CONFERIDA'
+                                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                          : 'bg-amber-100 text-amber-800 border border-amber-200'
+                                      }`}
+                                    >
+                                      {hist.status === 'CONFERIDA'
+                                        ? 'Encerrada / Conferida com Nota'
+                                        : 'Planejada / Aberta'}
+                                    </span>
+                                  </div>
+                                  <p className="text-xs text-slate-500 mt-0.5">
+                                    {formatDateBR(hist.data_criacao)} • {(hist.itens || []).length} item(ns) • Previsto:{' '}
+                                    <strong className="text-slate-800">{formatCurrency(hist.total_previsto)}</strong>
+                                    {conf
+                                      ? ` • Nota (${conf.estabelecimento}): ${formatCurrency(conf.valor_total_nota)}`
+                                      : ''}
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {/* BOTÃO DUPLICAR LISTA */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDuplicarLista(hist)}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold cursor-pointer transition border border-indigo-200 shadow-2xs"
+                                    title="Duplicar esta lista com todos os itens prontos para novas compras"
+                                  >
+                                    <Copy className="w-3.5 h-3.5" />
+                                    <span>Duplicar</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => handleLoadListFromHistory(hist)}
+                                    className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer transition"
+                                  >
+                                    Abrir
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setExpandedHistoryListId(isExp ? null : hist.db_id)
+                                    }
+                                    className="p-1.5 text-slate-500 hover:bg-slate-100 rounded-lg cursor-pointer"
+                                    title="Ver detalhes da lista"
+                                  >
+                                    {isExp ? (
+                                      <ChevronUp className="w-4 h-4" />
+                                    ) : (
+                                      <ChevronDown className="w-4 h-4" />
+                                    )}
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteHistoryList(hist.db_id)}
+                                    className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg cursor-pointer"
+                                    title="Excluir do histórico"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {isExp && (
+                                <div className="mt-3 bg-slate-50 rounded-xl p-3.5 border border-slate-200/70 space-y-2 text-xs">
+                                  {conf && (
+                                    <div className="space-y-1.5 pb-2.5 border-b border-slate-200">
+                                      <p className="font-bold text-slate-800">
+                                        Resumo da Nota Vinculada ({conf.estabelecimento}):
+                                      </p>
+                                      <p className="text-emerald-700">
+                                        ✅ Comprados da lista:{' '}
+                                        {(conf.comprados || []).map((c) => c.item_lista).join(', ') || 'Nenhum'}
+                                      </p>
+                                      {conf.faltaram?.length > 0 && (
+                                        <p className="text-rose-600">
+                                          ❌ Faltaram:{' '}
+                                          {conf.faltaram.map((f) => f.item_lista).join(', ')}
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  <div className="space-y-1">
+                                    <p className="font-bold text-slate-700">Itens desta lista:</p>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                      {(hist.itens || []).map((it, idx2) => (
+                                        <div key={idx2} className="flex items-center justify-between p-1.5 rounded-lg bg-white border border-slate-200/60 text-[11px]">
+                                          <span className="font-semibold text-slate-800 truncate">{it.apelido || it.descricao_item}</span>
+                                          <span className="text-slate-500 shrink-0">{it.quantidade} {it.unidade} • {formatCurrency(it.valor_unitario)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -8632,85 +9130,7 @@ ${JSON.stringify(itensDaNota)}`,
                       </div>
                     )}
 
-                    {/* CONFERÊNCIA FINAL COM NOTA FISCAL (EQUIVALÊNCIA SEMÂNTICA IA) */}
-                    {currentShoppingList.length > 0 && (
-                      <div className="p-5 bg-slate-50 border-t border-slate-200 space-y-4">
-                        <div>
-                          <h4 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-                            <CheckCheck className="w-4 h-4 text-emerald-600" />
-                            <span>
-                              Finalizar e Conferir Lista com a Nota Fiscal da Compra (IA)
-                            </span>
-                          </h4>
-                          <p className="text-xs text-slate-500 mt-0.5">
-                            Envie a foto/arquivo da nota fiscal ou selecione uma nota já salva. A IA reconhece itens equivalentes mesmo com nomes diferentes!
-                          </p>
-                        </div>
 
-                        <div className="flex flex-wrap items-center gap-2.5">
-                          <label className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer shadow-2xs">
-                            {aiListLoading ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Camera className="w-4 h-4" />
-                            )}
-                            <span>Fotografar Nota e Conferir</span>
-                            <input
-                              type="file"
-                              accept="image/*"
-                              capture="environment"
-                              onChange={handleVerifyListWithUploadedNota}
-                              disabled={aiListLoading}
-                              className="hidden"
-                            />
-                          </label>
-
-                          <label className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer shadow-2xs">
-                            {aiListLoading ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Upload className="w-4 h-4" />
-                            )}
-                            <span>Escolher Arquivo da Nota e Conferir</span>
-                            <input
-                              type="file"
-                              accept="image/*,application/pdf"
-                              onChange={handleVerifyListWithUploadedNota}
-                              disabled={aiListLoading}
-                              className="hidden"
-                            />
-                          </label>
-                        </div>
-
-                        {notasFiscais.length > 0 && (
-                          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-2 border-t border-slate-200/80">
-                            <select
-                              value={selectedExistingNotaId}
-                              onChange={(e) => setSelectedExistingNotaId(e.target.value)}
-                              className="flex-1 px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white"
-                            >
-                              <option value="">
-                                Ou selecione uma Nota Fiscal já cadastrada para conferir...
-                              </option>
-                              {notasFiscais.map((nf) => (
-                                <option key={nf.id} value={nf.id}>
-                                  {formatDateBR(nf.data_emissao)} - {nf.estabelecimento} (
-                                  {formatCurrency(nf.valor_total)})
-                                </option>
-                              ))}
-                            </select>
-                            <button
-                              type="button"
-                              onClick={handleVerifyListWithExistingNota}
-                              disabled={aiListLoading || !selectedExistingNotaId}
-                              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
-                            >
-                              Conferir com esta Nota
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
 
                   {/* RESULTADO DA CONFERÊNCIA POR EQUIVALÊNCIA DA LISTA ATUAL */}
@@ -8841,165 +9261,6 @@ ${JSON.stringify(itensDaNota)}`,
                     </div>
                   )}
                 </div>
-              </div>
-
-              {/* HISTÓRICO DE LISTAS DE COMPRAS SALVAS (SUPERMERCADO OU FARMÁCIA) */}
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
-                <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <History className="w-5 h-5 text-emerald-600" />
-                    <div>
-                      <h3 className="font-bold text-slate-900 text-sm">
-                        Histórico de Listas de Compras —{' '}
-                        {currentListType === 'FARMACIA' ? 'Farmácia' : 'Supermercado'} (
-                        {historicoListasDoTipo.length})
-                      </h3>
-                      <p className="text-xs text-slate-500">
-                        Suas listas salvas e relatórios de conferência com notas fiscais
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {historicoListasDoTipo.length === 0 ? (
-                  <div className="p-8 text-center text-slate-400 text-sm">
-                    Nenhuma lista salva no histórico de{' '}
-                    {currentListType === 'FARMACIA' ? 'Farmácia' : 'Supermercado'} ainda.
-                  </div>
-                ) : (
-                  <div className="divide-y divide-slate-100">
-                    {historicoListasDoTipo.map((hist) => {
-                      const isExp = expandedHistoryListId === hist.db_id;
-                      const conf = hist.conferencia;
-                      return (
-                        <div key={hist.db_id} className="p-4 sm:px-6">
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                            <div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="font-bold text-slate-900 text-sm">
-                                  {hist.titulo}
-                                </p>
-                                <span
-                                  className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-                                    hist.status === 'CONFERIDA'
-                                      ? 'bg-emerald-100 text-emerald-800'
-                                      : 'bg-amber-100 text-amber-800'
-                                  }`}
-                                >
-                                  {hist.status === 'CONFERIDA'
-                                    ? 'Conferida com Nota Fiscal'
-                                    : 'Planejada / Aberta'}
-                                </span>
-                              </div>
-                              <p className="text-xs text-slate-500 mt-1">
-                                Criada em {formatDateBR(hist.data_criacao)} •{' '}
-                                {(hist.itens || []).length} item(ns) • Previsto:{' '}
-                                <strong>{formatCurrency(hist.total_previsto)}</strong>
-                                {conf
-                                  ? ` • Nota (${conf.estabelecimento}): ${formatCurrency(
-                                      conf.valor_total_nota
-                                    )}`
-                                  : ''}
-                              </p>
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => handleLoadListFromHistory(hist)}
-                                className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer"
-                              >
-                                Abrir na Tela
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setExpandedHistoryListId(isExp ? null : hist.db_id)
-                                }
-                                className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg cursor-pointer"
-                                title="Ver detalhes da lista"
-                              >
-                                {isExp ? (
-                                  <ChevronUp className="w-4 h-4" />
-                                ) : (
-                                  <ChevronDown className="w-4 h-4" />
-                                )}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteHistoryList(hist.db_id)}
-                                className="p-2 text-slate-400 hover:text-rose-600 rounded-lg cursor-pointer"
-                                title="Excluir do histórico"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-
-                          {isExp && (
-                            <div className="mt-4 bg-slate-50 rounded-xl p-4 border border-slate-200/70 space-y-3 text-xs">
-                              {conf && (
-                                <div className="space-y-2 pb-3 border-b border-slate-200">
-                                  <p className="font-bold text-slate-800">
-                                    Resumo da Conferência ({conf.estabelecimento}):
-                                  </p>
-                                  <p className="text-emerald-700">
-                                    ✅ Comprados da lista:{' '}
-                                    {(conf.comprados || [])
-                                      .map(
-                                        (c) =>
-                                          `${c.item_lista} (= ${c.item_equivalente_nota})`
-                                      )
-                                      .join(', ') || 'Nenhum'}
-                                  </p>
-                                  {(conf.faltaram || []).length > 0 && (
-                                    <p className="text-rose-600">
-                                      ❌ Faltaram comprar:{' '}
-                                      {conf.faltaram.map((f) => f.item_lista).join(', ')}
-                                    </p>
-                                  )}
-                                  {(conf.extras_fora_da_lista || []).length > 0 && (
-                                    <p className="text-indigo-700">
-                                      ➕ Comprados fora da lista:{' '}
-                                      {conf.extras_fora_da_lista
-                                        .map((x) => x.item_nota)
-                                        .join(', ')}
-                                    </p>
-                                  )}
-                                </div>
-                              )}
-
-                              <div>
-                                <p className="font-bold text-slate-700 mb-1.5">
-                                  Itens Planejados na Lista:
-                                </p>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                                  {(hist.itens || []).map((it, idx) => (
-                                    <div
-                                      key={idx}
-                                      className="flex items-center justify-between bg-white px-3 py-1.5 rounded-lg border border-slate-200/80"
-                                    >
-                                      <span>
-                                        {it.checked ? '✅ ' : '⬜ '}
-                                        {it.descricao_item} ({it.quantidade} {it.unidade})
-                                      </span>
-                                      <span className="font-semibold">
-                                        {formatCurrency(
-                                          (Number(it.quantidade) || 0) *
-                                            (Number(it.valor_unitario) || 0)
-                                        )}
-                                      </span>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
               </div>
             </div>
           )}
