@@ -4,6 +4,7 @@ import { GoogleGenAI } from '@google/genai';
 import jsQR from 'jsqr';
 import {
   ArrowLeftRight,
+  ArrowUpDown,
   CreditCard,
   ArrowDownCircle,
   Receipt,
@@ -1307,6 +1308,11 @@ export default function App() {
     FARMACIA: { id: null, titulo: '', analise_ia: '', conferencia: null },
   });
 
+  // Estados do Modo Compras no Supermercado (Celular / Ao Vivo)
+  const [modoComprasFiltro, setModoComprasFiltro] = useState('TODOS');
+  const [comprasListaSelecionadaId, setComprasListaSelecionadaId] = useState('ATUAL');
+  const [notaVinculadaSelecionadaId, setNotaVinculadaSelecionadaId] = useState('');
+  const [conferenciaResultadoModoCompras, setConferenciaResultadoModoCompras] = useState(null);
   const [catalogSearch, setCatalogSearch] = useState('');
   const [catalogCategoryFilter, setCatalogCategoryFilter] = useState(
     'Alimentação & Supermercado'
@@ -4693,6 +4699,236 @@ Tarefa:
     }
   };
 
+
+  // ==========================================
+  // FUNÇÕES DO MODO COMPRAS NO SUPERMERCADO (CELULAR)
+  // ==========================================
+  const toggleCheckItemModoCompras = (id) => {
+    setShoppingListSupermercado((prev) => {
+      const updated = prev.map((item) =>
+        item.id === id ? { ...item, checked: !item.checked } : item
+      );
+      try {
+        localStorage.setItem('iaz_shopping_list_supermercado', JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
+    });
+  };
+
+  const moveItemModoCompras = (index, delta) => {
+    const target = index + delta;
+    if (target < 0 || target >= shoppingListSupermercado.length) return;
+    setShoppingListSupermercado((prev) => {
+      const next = [...prev];
+      const [item] = next.splice(index, 1);
+      next.splice(target, 0, item);
+      try {
+        localStorage.setItem('iaz_shopping_list_supermercado', JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
+  };
+
+  const handleOrdenarPendentesPrimeiro = () => {
+    setShoppingListSupermercado((prev) => {
+      const pendentes = prev.filter((i) => !i.checked);
+      const marcados = prev.filter((i) => i.checked);
+      const sorted = [...pendentes, ...marcados];
+      try {
+        localStorage.setItem('iaz_shopping_list_supermercado', JSON.stringify(sorted));
+      } catch (e) {}
+      return sorted;
+    });
+    showNotice('Pendentes colocados no topo da lista!');
+  };
+
+  const handleOrdenarAlfabeticamente = () => {
+    setShoppingListSupermercado((prev) => {
+      const sorted = [...prev].sort((a, b) => {
+        const chaveA = String(a.descricao_original || a.descricao_item || '').trim().toUpperCase();
+        const nomeA = (itemApelidosMap[chaveA] || a.apelido || a.descricao_item || '').toLowerCase();
+        const chaveB = String(b.descricao_original || b.descricao_item || '').trim().toUpperCase();
+        const nomeB = (itemApelidosMap[chaveB] || b.apelido || b.descricao_item || '').toLowerCase();
+        return nomeA.localeCompare(nomeB);
+      });
+      try {
+        localStorage.setItem('iaz_shopping_list_supermercado', JSON.stringify(sorted));
+      } catch (e) {}
+      return sorted;
+    });
+    showNotice('Lista ordenada em ordem alfabética (A-Z)!');
+  };
+
+  const handleSelecionarListaModoCompras = (id) => {
+    setComprasListaSelecionadaId(id);
+    if (id === 'ATUAL') return;
+    const hist = historicoListas.find((l) => l.db_id === id);
+    if (hist) {
+      handleLoadListFromHistory(hist);
+    }
+  };
+
+  const handleFinalizarComprovanteModoCompras = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!effectiveGeminiKey) {
+      return showNotice('Configure VITE_GEMINI_API_KEY no .env', 'error');
+    }
+
+    setOcrLoading(true);
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      const isPdf = file.type === 'application/pdf';
+
+      let interaction;
+      if (isPdf) {
+        interaction = await callGeminiWithFallback({
+          input: [
+            {
+              inline_data: {
+                data: dataUrl.split(',')[1],
+                mime_type: 'application/pdf',
+              },
+            },
+            `Você é um especialista contábil brasileiro. Extraia TODOS os dados desta nota fiscal ou cupom fiscal PDF.
+Retorne SEMPRE no schema JSON: estabelecimento, cnpj, data_emissao (AAAA-MM-DD), valor_total (número), desconto (número), forma_pagamento, chave_acesso, e todos os itens com descricao_item, quantidade, unidade, valor_unitario, valor_total.`,
+          ],
+          response_format: [
+            {
+              type: 'text',
+              mime_type: 'application/json',
+              schema: OCR_RESPONSE_SCHEMA,
+            },
+          ],
+        });
+      } else {
+        interaction = await callGeminiWithFallback({
+          input: [
+            {
+              inline_data: {
+                data: dataUrl.split(',')[1],
+                mime_type: 'image/jpeg',
+              },
+            },
+            `Você é um especialista contábil brasileiro. Extraia TODOS os dados desta nota fiscal ou cupom fiscal.
+Retorne SEMPRE no schema JSON: estabelecimento, cnpj, data_emissao (AAAA-MM-DD), valor_total (número), desconto (número), forma_pagamento, chave_acesso, e todos os itens com descricao_item, quantidade, unidade, valor_unitario, valor_total.`,
+          ],
+          response_format: [
+            {
+              type: 'text',
+              mime_type: 'application/json',
+              schema: OCR_RESPONSE_SCHEMA,
+            },
+          ],
+        });
+      }
+
+      const parsedNota = JSON.parse(interaction.output_text || '{}');
+      const dataReal = resolverDataEmissaoReal(
+        parsedNota.data_emissao,
+        parsedNota.chave_acesso,
+        file
+      );
+
+      const notaParaSalvar = {
+        estabelecimento: parsedNota.estabelecimento || 'Supermercado',
+        cnpj: parsedNota.cnpj || '',
+        data_emissao: dataReal,
+        valor_total: Number(parsedNota.valor_total) || 0,
+        desconto: Number(parsedNota.desconto) || 0,
+        forma_pagamento: parsedNota.forma_pagamento || 'PIX',
+        chave_acesso: parsedNota.chave_acesso || '',
+        categoria_geral: 'Alimentação & Supermercado',
+        cartao_id: '',
+        status_pagamento: 'CONFIRMADO',
+        itens: Array.isArray(parsedNota.itens)
+          ? parsedNota.itens.map((it) => ({
+              ...it,
+              apelido: (itemApelidosMap[String(it.descricao_item || '').trim().toUpperCase()] || it.apelido || '').trim(),
+              categoria_item: 'Alimentação & Supermercado',
+              garantia_meses: Number(it.garantia_meses) || 0,
+            }))
+          : [],
+      };
+
+      // 1. Salva a nota fiscal no Supabase (em notas_fiscais, itens_nota e transacoes)
+      const notaIdCriada = await salvarNotaCompletaNoBanco(notaParaSalvar, dataUrl);
+      notaParaSalvar.id = notaIdCriada;
+
+      // 2. Executa a conferência por IA entre a lista e a nota fiscal
+      const conf = await executarConferenciaComNotaIA(notaParaSalvar, shoppingListSupermercado);
+
+      // 3. Salva a lista vinculada no histórico de listas
+      await handleSaveListToHistory(conf);
+
+      // 4. Atualiza os dados em tempo real
+      await fetchAllData();
+
+      const totalPlanejado = shoppingListSupermercado.reduce(
+        (acc, i) => acc + (Number(i.quantidade) || 0) * (Number(i.valor_unitario) || 0),
+        0
+      );
+
+      setConferenciaResultadoModoCompras({
+        nota: notaParaSalvar,
+        conferencia: conf,
+        totalPlanejado,
+      });
+
+      showNotice('Compra finalizada com sucesso! A nota foi vinculada a esta lista e salva no histórico geral de notas!');
+    } catch (err) {
+      console.error('Erro ao finalizar compra com nota:', err);
+      showNotice(`Erro ao processar nota fiscal: ${err.message}`, 'error');
+    } finally {
+      setOcrLoading(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleVincularNotaExistenteModoCompras = async () => {
+    if (!notaVinculadaSelecionadaId) {
+      return showNotice('Selecione uma nota fiscal para vincular.', 'error');
+    }
+
+    const nf = notasFiscais.find((n) => n.id === notaVinculadaSelecionadaId);
+    if (!nf) return;
+
+    setOcrLoading(true);
+    try {
+      const itensDaNota = itensNota.filter((i) => i.nota_id === nf.id);
+      const dadosNota = {
+        id: nf.id,
+        estabelecimento: nf.estabelecimento,
+        data_emissao: (nf.data_emissao || '').split('T')[0],
+        valor_total: nf.valor_total,
+        desconto: nf.desconto,
+        itens: itensDaNota,
+      };
+
+      const conf = await executarConferenciaComNotaIA(dadosNota, shoppingListSupermercado);
+      await handleSaveListToHistory(conf);
+      await fetchAllData();
+
+      const totalPlanejado = shoppingListSupermercado.reduce(
+        (acc, i) => acc + (Number(i.quantidade) || 0) * (Number(i.valor_unitario) || 0),
+        0
+      );
+
+      setConferenciaResultadoModoCompras({
+        nota: nf,
+        conferencia: conf,
+        totalPlanejado,
+      });
+
+      showNotice('Lista vinculada à nota fiscal com sucesso!');
+    } catch (err) {
+      showNotice(`Erro ao vincular nota: ${err.message}`, 'error');
+    } finally {
+      setOcrLoading(false);
+    }
+  };
+
   // 3. CONFERÊNCIA INTELIGENTE DA LISTA COM NOTA FISCAL (EQUIVALÊNCIA DE NOMES VIA IA)
   const executarConferenciaComNotaIA = async (dadosNota) => {
     const listaPlanejada = currentShoppingList.map((i) => ({
@@ -5157,6 +5393,7 @@ ${JSON.stringify(itensDaNota)}`,
   const navItems = [
     { id: 'resumo', label: 'Resumo', icon: PieChart },
     { id: 'notas', label: 'Notas', icon: Receipt },
+    { id: 'compras', label: 'Comprar', icon: ShoppingBag },
     { id: 'lista', label: 'Supermercado', icon: ShoppingCart },
     { id: 'farmacia', label: 'Farmácia', icon: HeartPulse },
     { id: 'demais', label: 'Demais Itens', icon: Package },
@@ -7334,12 +7571,481 @@ ${JSON.stringify(itensDaNota)}`,
             </div>
           )}
 
+
+          {/* ==========================================
+              ABA DEDICADA: MODO COMPRAS NO SUPERMERCADO (CELULAR)
+              FOCO TOTAL: ESCOLHER LISTA, MARCAR ITENS, ORDENAR E MANDAR NOTA FISCAL
+          ========================================== */}
+          {activeTab === 'compras' && (
+            <div className="space-y-4 max-w-2xl mx-auto">
+              {/* TOPO: SELETOR DE LISTA E BOTÃO DE VOLTAR AO CATÁLOGO */}
+              <div className="p-3 bg-white rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0">
+                    <ShoppingCart className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block">Lista Ativa</span>
+                    <select
+                      value={comprasListaSelecionadaId}
+                      onChange={(e) => handleSelecionarListaModoCompras(e.target.value)}
+                      className="w-full text-xs font-bold text-slate-900 bg-transparent focus:outline-none truncate cursor-pointer"
+                    >
+                      <option value="ATUAL">
+                        Lista Atual de Supermercado ({shoppingListSupermercado.length} itens)
+                      </option>
+                      {historicoListas
+                        .filter((l) => l.tipo === 'SUPERMERCADO')
+                        .map((h) => (
+                          <option key={h.db_id} value={h.db_id}>
+                            {h.titulo || 'Lista'} ({formatDateBR(h.data_criacao)}) • {(h.itens || []).length} itens
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('lista')}
+                  className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer shrink-0 transition"
+                  title="Voltar para a tela de edição e catálogo"
+                >
+                  + Adicionar Itens
+                </button>
+              </div>
+
+              {/* CARD SUPERIOR COMPACTO: PRÉVIA TOTAL, NO CARRINHO, FALTA PEGAR */}
+              {(() => {
+                const totalPrevisto = shoppingListSupermercado.reduce(
+                  (acc, i) => acc + (Number(i.quantidade) || 0) * (Number(i.valor_unitario) || 0),
+                  0
+                );
+                const totalNoCarrinho = shoppingListSupermercado
+                  .filter((i) => i.checked)
+                  .reduce(
+                    (acc, i) => acc + (Number(i.quantidade) || 0) * (Number(i.valor_unitario) || 0),
+                    0
+                  );
+                const marcadosCount = shoppingListSupermercado.filter((i) => i.checked).length;
+                const pendentesCount = shoppingListSupermercado.length - marcadosCount;
+                const progressoPct =
+                  shoppingListSupermercado.length > 0
+                    ? Math.round((marcadosCount / shoppingListSupermercado.length) * 100)
+                    : 0;
+
+                return (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-3 gap-2 bg-white p-2.5 rounded-2xl border border-slate-200 shadow-2xs">
+                      <div className="text-center p-2 rounded-xl bg-slate-50 border border-slate-100">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">Prévia</span>
+                        <p className="text-sm sm:text-base font-extrabold text-slate-900 mt-0.5">{formatCurrency(totalPrevisto)}</p>
+                        <span className="text-[10px] text-slate-400 block">{shoppingListSupermercado.length} itens</span>
+                      </div>
+                      <div className="text-center p-2 rounded-xl bg-emerald-50 border border-emerald-100">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 block">No Carrinho</span>
+                        <p className="text-sm sm:text-base font-extrabold text-emerald-600 mt-0.5">{formatCurrency(totalNoCarrinho)}</p>
+                        <span className="text-[10px] text-emerald-700 font-semibold block">{marcadosCount} pegos</span>
+                      </div>
+                      <div className="text-center p-2 rounded-xl bg-amber-50 border border-amber-100">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 block">Falta Pegar</span>
+                        <p className="text-sm sm:text-base font-extrabold text-amber-600 mt-0.5">{formatCurrency(totalPrevisto - totalNoCarrinho)}</p>
+                        <span className="text-[10px] text-amber-700 font-semibold block">{pendentesCount} pendentes</span>
+                      </div>
+                    </div>
+
+                    {/* BARRA DE PROGRESSO SLIM */}
+                    <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                      <div
+                        className="bg-emerald-500 h-full transition-all duration-300 rounded-full"
+                        style={{ width: `${progressoPct}%` }}
+                      />
+                    </div>
+
+                    {/* FILTROS RÁPIDOS & ORDENAÇÃO */}
+                    <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1">
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setModoComprasFiltro('TODOS')}
+                          className={`px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer ${
+                            modoComprasFiltro === 'TODOS'
+                              ? 'bg-slate-900 text-white'
+                              : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          Todos ({shoppingListSupermercado.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setModoComprasFiltro('PENDENTES')}
+                          className={`px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer ${
+                            modoComprasFiltro === 'PENDENTES'
+                              ? 'bg-amber-600 text-white'
+                              : 'bg-white border border-slate-200 text-amber-700 hover:bg-amber-50'
+                          }`}
+                        >
+                          Falta Pegar ({pendentesCount})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setModoComprasFiltro('CARRINHO')}
+                          className={`px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer ${
+                            modoComprasFiltro === 'CARRINHO'
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-white border border-slate-200 text-emerald-700 hover:bg-emerald-50'
+                          }`}
+                        >
+                          No Carrinho ({marcadosCount})
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={handleOrdenarPendentesPrimeiro}
+                          className="px-2 py-1 rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-[11px] font-bold flex items-center gap-1 cursor-pointer transition"
+                          title="Mover todos os itens pendentes para o topo"
+                        >
+                          <ArrowUpDown className="w-3 h-3 text-amber-600" />
+                          <span>Pendentes ↑</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleOrdenarAlfabeticamente}
+                          className="px-2 py-1 rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-[11px] font-bold cursor-pointer transition"
+                          title="Ordenar lista de A a Z pelo apelido"
+                        >
+                          A-Z
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* LISTA DE ITENS ULTRA FÁCIL PARA CELULAR */}
+              {shoppingListSupermercado.length === 0 ? (
+                <div className="p-12 text-center bg-white rounded-3xl border border-slate-200 space-y-3">
+                  <ShoppingCart className="w-12 h-12 text-slate-300 mx-auto stroke-1" />
+                  <h4 className="font-bold text-slate-800 text-sm">Sua lista de supermercado está vazia</h4>
+                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                    Adicione itens à sua lista na aba Supermercado ou use o botão Prever Lista com IA antes de ir às compras!
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('lista')}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs cursor-pointer"
+                  >
+                    Montar Lista no Supermercado
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {shoppingListSupermercado
+                    .map((item, idx) => ({ item, idx }))
+                    .filter(({ item }) => {
+                      if (modoComprasFiltro === 'PENDENTES') return !item.checked;
+                      if (modoComprasFiltro === 'CARRINHO') return item.checked;
+                      return true;
+                    })
+                    .map(({ item, idx }) => {
+                      const chaveOriginal = String(item.descricao_original || item.descricao_item || '').trim().toUpperCase();
+                      const apelidoCadastrado = (itemApelidosMap[chaveOriginal] || item.apelido || '').trim();
+                      const nomeExibicao = apelidoCadastrado || item.descricao_item;
+                      const subtotal = (Number(item.quantidade) || 0) * (Number(item.valor_unitario) || 0);
+
+                      const grupoItem = produtosAgrupadosPorApelido.find(
+                        (g) =>
+                          g.chave === nomeExibicao.trim().toUpperCase() ||
+                          g.produtos.some((p) => p.chave === chaveOriginal)
+                      );
+
+                      return (
+                        <div
+                          key={item.id}
+                          className={`p-3.5 rounded-2xl border transition-all flex items-start gap-2.5 sm:gap-3 ${
+                            item.checked
+                              ? 'bg-emerald-50/50 border-emerald-200 opacity-80'
+                              : 'bg-white border-slate-200 shadow-2xs hover:border-slate-300'
+                          }`}
+                        >
+                          {/* BOTÕES DE MOVER CIMA / BAIXO */}
+                          <div className="flex flex-col gap-0.5 text-slate-400 shrink-0 mt-0.5">
+                            <button
+                              type="button"
+                              onClick={() => moveItemModoCompras(idx, -1)}
+                              disabled={idx === 0}
+                              className="p-1 hover:bg-slate-100 rounded disabled:opacity-20 cursor-pointer"
+                              title="Mover para cima"
+                            >
+                              <ChevronUp className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => moveItemModoCompras(idx, 1)}
+                              disabled={idx === shoppingListSupermercado.length - 1}
+                              className="p-1 hover:bg-slate-100 rounded disabled:opacity-20 cursor-pointer"
+                              title="Mover para baixo"
+                            >
+                              <ChevronDown className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          {/* CHECKBOX GRANDE & TOQUE */}
+                          <button
+                            type="button"
+                            onClick={() => toggleCheckItemModoCompras(item.id)}
+                            className={`w-7 h-7 rounded-xl flex items-center justify-center shrink-0 mt-0.5 transition cursor-pointer border ${
+                              item.checked
+                                ? 'bg-emerald-600 border-emerald-600 text-white shadow-xs'
+                                : 'border-slate-300 bg-slate-50 hover:border-emerald-500'
+                            }`}
+                          >
+                            {item.checked && <Check className="w-4 h-4 stroke-[3]" />}
+                          </button>
+
+                          {/* CONTEÚDO DO ITEM */}
+                          <div
+                            onClick={() => toggleCheckItemModoCompras(item.id)}
+                            className="flex-1 min-w-0 cursor-pointer"
+                          >
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <p
+                                className={`font-bold text-base leading-snug ${
+                                  item.checked ? 'line-through text-slate-400' : 'text-slate-900'
+                                }`}
+                              >
+                                {nomeExibicao}
+                              </p>
+                              {item.checked && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 shrink-0">
+                                  No Carrinho
+                                </span>
+                              )}
+                            </div>
+
+                            {item.descricao_original && item.descricao_original !== nomeExibicao && (
+                              <p className="text-xs text-slate-400 mt-0.5 truncate">
+                                Nota: {item.descricao_original}
+                              </p>
+                            )}
+
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-1 text-xs text-slate-600">
+                              <span className="font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-md">
+                                {item.quantidade} {item.unidade}
+                              </span>
+                              <span>×</span>
+                              <span>{formatCurrency(item.valor_unitario)}</span>
+                              <span className="text-slate-300">•</span>
+                              <span className="font-bold text-emerald-700">
+                                {formatCurrency(subtotal)}
+                              </span>
+                            </div>
+
+                            {/* SE HOUVER OPÇÕES CADASTRADAS PARA ESSE APELIDO */}
+                            {grupoItem && grupoItem.temMultiplos && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setModalEscolhaProduto({ grupo: grupoItem, itemEmEdicaoId: item.id });
+                                }}
+                                className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded-md mt-1.5 cursor-pointer border border-indigo-200"
+                              >
+                                <ArrowLeftRight className="w-3 h-3" />
+                                <span>Trocar marca ({grupoItem.produtos.length} opções)</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+
+              {/* CARD DE CONCLUSÃO / RESULTADO DA CONFERÊNCIA COM NOTA */}
+              {conferenciaResultadoModoCompras && (
+                <div className="bg-white rounded-3xl p-5 border-2 border-emerald-500 shadow-xl space-y-4 animate-in fade-in zoom-in-95">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0" />
+                      <div>
+                        <h3 className="font-bold text-slate-900 text-sm sm:text-base">Compra Finalizada com Sucesso!</h3>
+                        <p className="text-[11px] text-slate-500">Nota vinculada à lista e adicionada ao histórico geral</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setConferenciaResultadoModoCompras(null)}
+                      className="p-1 rounded-lg text-slate-400 hover:bg-slate-100 cursor-pointer"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 text-center p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                    <div>
+                      <span className="text-[10px] text-slate-400 uppercase font-bold block">Planejado</span>
+                      <p className="text-xs sm:text-sm font-bold text-slate-800">{formatCurrency(conferenciaResultadoModoCompras.totalPlanejado)}</p>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-emerald-600 uppercase font-bold block">Pago na Nota</span>
+                      <p className="text-xs sm:text-sm font-bold text-emerald-700">{formatCurrency(conferenciaResultadoModoCompras.nota.valor_total)}</p>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-indigo-600 uppercase font-bold block">Diferença</span>
+                      <p className={`text-xs sm:text-sm font-bold ${
+                        conferenciaResultadoModoCompras.totalPlanejado >= conferenciaResultadoModoCompras.nota.valor_total
+                          ? 'text-emerald-600'
+                          : 'text-rose-600'
+                      }`}>
+                        {formatCurrency(conferenciaResultadoModoCompras.nota.valor_total - conferenciaResultadoModoCompras.totalPlanejado)}
+                      </p>
+                    </div>
+                  </div>
+
+                  {conferenciaResultadoModoCompras.conferencia?.insight_consumo && (
+                    <div className="p-3.5 rounded-xl bg-indigo-50 border border-indigo-200 text-xs text-indigo-950 space-y-1">
+                      <p className="font-bold text-indigo-800 flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Análise de Equivalência pela IA:</span>
+                      </p>
+                      <p className="leading-relaxed">{conferenciaResultadoModoCompras.conferencia.insight_consumo}</p>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConferenciaResultadoModoCompras(null);
+                        setActiveTab('notas');
+                      }}
+                      className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-50 cursor-pointer"
+                    >
+                      Ver no Histórico de Notas
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConferenciaResultadoModoCompras(null);
+                        setShoppingListSupermercado([]);
+                        try { localStorage.setItem('iaz_shopping_list_supermercado', '[]'); } catch(e) {}
+                        setActiveTab('lista');
+                      }}
+                      className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer shadow-xs"
+                    >
+                      Nova Lista de Compras
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* SESSÃO AO FINAL DAS COMPRAS: MANDAR NOTA FISCAL */}
+              <div className="pt-2">
+                <div className="bg-gradient-to-r from-emerald-600 to-teal-700 rounded-3xl p-5 text-white shadow-lg space-y-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-9 h-9 rounded-2xl bg-white/20 flex items-center justify-center shrink-0">
+                      <Receipt className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-sm sm:text-base leading-tight">Terminou as compras no caixa?</h3>
+                      <p className="text-xs text-emerald-100">Envie a Nota Fiscal para conferir e vincular a esta lista</p>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-emerald-50 leading-relaxed">
+                    A nota será lida por IA, vinculada a esta lista e adicionada automaticamente ao histórico de todas as notas do app!
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                    <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-white text-emerald-800 font-bold text-xs sm:text-sm shadow-md hover:bg-emerald-50 cursor-pointer transition">
+                      <Camera className="w-4 h-4 text-emerald-700" />
+                      <span>Tirar Foto da Nota</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={handleFinalizarComprovanteModoCompras}
+                        className="hidden"
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-emerald-800/80 hover:bg-emerald-800 text-white font-bold text-xs sm:text-sm shadow-sm cursor-pointer transition border border-white/20">
+                      <Upload className="w-4 h-4" />
+                      <span>Enviar Foto ou PDF</span>
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        onChange={handleFinalizarComprovanteModoCompras}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+
+                  {/* VINCULAR NOTA JÁ CADASTRADA */}
+                  {notasFiscais.length > 0 && (
+                    <div className="pt-2 border-t border-white/15 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <span className="text-[11px] text-emerald-100 font-medium">Ou vincular nota já escaneada:</span>
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          value={notaVinculadaSelecionadaId}
+                          onChange={(e) => setNotaVinculadaSelecionadaId(e.target.value)}
+                          className="text-xs bg-white text-slate-800 px-2.5 py-1.5 rounded-xl font-medium focus:outline-none max-w-[200px] truncate"
+                        >
+                          <option value="">Selecione uma nota...</option>
+                          {notasFiscais.slice(0, 10).map((nf) => (
+                            <option key={nf.id} value={nf.id}>
+                              {nf.estabelecimento} ({formatDateBR(nf.data_emissao)}) • {formatCurrency(nf.valor_total)}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handleVincularNotaExistenteModoCompras}
+                          disabled={!notaVinculadaSelecionadaId}
+                          className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold disabled:opacity-40 cursor-pointer transition"
+                        >
+                          Vincular
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ==========================================
               ABAS 4 & 5: LISTA INTELIGENTE DE SUPERMERCADO OU FARMÁCIA
               (COM IA DE PREVISÃO DE CONSUMO, HISTÓRICO E CONFERÊNCIA DE NOTA FISCAL POR EQUIVALÊNCIA)
           ========================================== */}
           {(activeTab === 'lista' || activeTab === 'farmacia') && (
             <div className="space-y-6">
+              {/* BOTÃO DE ACESSO RÁPIDO AO MODO COMPRAS NO CELULAR */}
+              <button
+                type="button"
+                onClick={() => setActiveTab('compras')}
+                className="w-full p-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-600 text-white font-bold text-sm shadow-md transition-all flex items-center justify-between gap-3 cursor-pointer group"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+                    <ShoppingBag className="w-5 h-5 text-white" />
+                  </div>
+                  <div className="text-left">
+                    <p className="font-extrabold text-sm sm:text-base leading-tight">Ir às Compras no Supermercado (Modo Celular)</p>
+                    <p className="text-xs text-emerald-100 font-medium mt-0.5">Tela simplificada para marcar itens, ordenar e mandar a nota fiscal</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 bg-white/20 px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 group-hover:bg-white/30 transition">
+                  <span>Abrir</span>
+                  <ArrowRight className="w-4 h-4" />
+                </div>
+              </button>
+
+
               {/* BANNER DE IA: PREVISÃO DE LISTA BASEADA NO CONSUMO */}
               <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -9901,7 +10607,7 @@ ${JSON.stringify(itensDaNota)}`,
             : 'bg-white/95 border-slate-200 shadow-[0_-4px_20px_rgba(15,23,42,0.06)]'
         }`}
       >
-        <div className="max-w-md mx-auto grid grid-cols-8 items-center px-1 py-2">
+        <div className="max-w-md mx-auto grid grid-cols-9 items-center px-1 py-1.5">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;
