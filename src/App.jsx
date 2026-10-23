@@ -58,6 +58,8 @@ import {
   TrendingDown,
   Layers,
   Lightbulb,
+  Tag,
+  GripVertical,
 } from 'lucide-react';
 
 // ==========================================
@@ -1060,6 +1062,122 @@ function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBran
           </div>
         </div>
       )}
+      {/* MODAL PARA CADASTRAR OU EDITAR APELIDO DO ITEM DA NOTA */}
+      {modalApelidoItem && (
+        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center">
+                  <Tag className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">
+                    Apelido do Produto
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Defina um nome amigável para usar nas listas e pesquisas
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalApelidoItem(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                  Descrição Original na Nota Fiscal:
+                </label>
+                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-mono text-slate-700 select-all">
+                  {modalApelidoItem.descricao_item}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  Apelido / Nome Amigável:
+                </label>
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="Ex: Leite Integral Piracanjuba, Pão de Forma..."
+                  value={modalApelidoItem.apelidoInput ?? (modalApelidoItem.apelidoAtual || '')}
+                  onChange={(e) =>
+                    setModalApelidoItem({
+                      ...modalApelidoItem,
+                      apelidoInput: e.target.value,
+                    })
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleSalvarApelidoItem(
+                        modalApelidoItem.id,
+                        modalApelidoItem.descricao_item,
+                        modalApelidoItem.apelidoInput ?? modalApelidoItem.apelidoAtual
+                      );
+                    }
+                  }}
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm text-slate-900 focus:outline-none focus:border-emerald-500 font-medium"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  💡 Este apelido aparecerá no topo do catálogo e na sua lista de compras de Supermercado.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              {modalApelidoItem.apelidoAtual ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSalvarApelidoItem(
+                      modalApelidoItem.id,
+                      modalApelidoItem.descricao_item,
+                      ''
+                    )
+                  }
+                  className="px-3 py-2 rounded-xl text-xs font-semibold text-rose-600 hover:bg-rose-50 cursor-pointer transition"
+                >
+                  Remover Apelido
+                </button>
+              ) : (
+                <div />
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setModalApelidoItem(null)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSalvarApelidoItem(
+                      modalApelidoItem.id,
+                      modalApelidoItem.descricao_item,
+                      modalApelidoItem.apelidoInput ?? (modalApelidoItem.apelidoAtual || '')
+                    )
+                  }
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs cursor-pointer"
+                >
+                  Salvar Apelido
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -1664,6 +1782,16 @@ export default function App() {
   const [statsGroupSearch, setStatsGroupSearch] = useState('');
   const [statsGroupCategoryFilter, setStatsGroupCategoryFilter] = useState('TODOS');
   const [brandFilterByGroup, setBrandFilterByGroup] = useState({});
+  const [itemApelidosMap, setItensApelidosMap] = useState(() => {
+    try {
+      const raw = localStorage.getItem('iaz_itens_apelidos');
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  });
+  const [modalApelidoItem, setModalApelidoItem] = useState(null);
+  const [draggedItemIndex, setDraggedItemIndex] = useState(null);
   const [statsSortBy, setStatsSortBy] = useState('MAIS_COMPRADOS');
 
   const estatisticasItensCompleta = useMemo(() => {
@@ -7040,7 +7168,7 @@ ${JSON.stringify(itensDaNota)}`,
                       <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                       <input
                         type="text"
-                        placeholder="Buscar produto pelo nome..."
+                        placeholder="Buscar produto por nome ou apelido..."
                         value={catalogSearch}
                         onChange={(e) => setCatalogSearch(e.target.value)}
                         className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs"
