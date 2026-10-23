@@ -53,8 +53,11 @@ import {
   TrendingUp,
   Tags,
   ArrowUp,
-  ArrowDown,
+    ArrowDown,
   Printer,
+  TrendingDown,
+  Layers,
+  Lightbulb,
 } from 'lucide-react';
 
 // ==========================================
@@ -688,6 +691,364 @@ const calcularStatusGarantia = (dataEmissaoStr, garantiaMeses) => {
   };
 };
 
+// ==========================================
+// REGRAS DE AGRUPAMENTO DE PRODUTOS E IDENTIFICAÇÃO DE MARCAS
+// ==========================================
+const REGRAS_GRUPOS_PRODUTOS = [
+  { grupo: 'Leite', icone: '🥛', termos: ['LEITE', 'LATTE', 'MILK', 'BEBIDA LACTEA', 'BEB LACTEA'] },
+  { grupo: 'Queijo', icone: '🧀', termos: ['QUEIJO', 'QJO', 'MUSSARELA', 'MOZZARELLA', 'PRATO', 'COALHO', 'PARMESAO', 'PARMESÃO', 'RICOTA', 'GOUDA', 'PROVOLONE', 'BRIE', 'CHEDDAR', 'REQUEIJAO', 'REQUEIJÃO'] },
+  { grupo: 'Pães & Torradas', icone: '🍞', termos: ['PAO', 'PÃO', 'TORRADA', 'BISNAGA', 'PANIF', 'CROISSANT', 'BROA', 'BAGUETE'] },
+  { grupo: 'Café & Chá', icone: '☕', termos: ['CAFE', 'CAFÉ', 'CAPPUCCINO', 'CAPUCCINO', 'CHA', 'CHÁ', 'NESPRESSO', 'DOLCE GUSTO'] },
+  { grupo: 'Arroz', icone: '🍚', termos: ['ARROZ'] },
+  { grupo: 'Feijão & Grãos', icone: '🫘', termos: ['FEIJAO', 'FEIJÃO', 'GRAO DE BICO', 'GRÃO DE BICO', 'LENTILHA', 'ERVILHA'] },
+  { grupo: 'Carnes Bovinas', icone: '🥩', termos: ['ALCATRA', 'PICANHA', 'PATINHO', 'CONTRAFILE', 'CONTRA FILÉ', 'ACEM', 'ACÉM', 'MAMINHA', 'FRALDINHA', 'COSTELA', 'CARNE MOIDA', 'CARNE MOÍDA', 'FILE MIGNON', 'FILÉ MIGNON', 'MUSCULO', 'MÚSCULO'] },
+  { grupo: 'Aves & Frango', icone: '🍗', termos: ['FRANGO', 'PEITO FRANGO', 'FILE FRANGO', 'FILÉ FRANGO', 'COXA', 'SOBRECOXA', 'ASA FRANGO', 'SASSAMI', 'GALINHA', 'PERU', 'CHESTER'] },
+  { grupo: 'Carnes Suínas & Embutidos', icone: '🍖', termos: ['LINGUICA', 'LINGUIÇA', 'SALSICHA', 'PRESUNTO', 'BACON', 'LOMBO', 'PERNIL', 'CALABRESA', 'SALAME', 'MORTADELA'] },
+  { grupo: 'Peixes & Frutos do Mar', icone: '🐟', termos: ['PEIXE', 'TILAPIA', 'TILÁPIA', 'SALMAO', 'SALMÃO', 'BACALHAU', 'ATUM', 'SARDINHA', 'CAMARAO', 'CAMARÃO'] },
+  { grupo: 'Ovos', icone: '🍳', termos: ['OVO', 'OVOS'] },
+  { grupo: 'Massas & Macarrão', icone: '🍝', termos: ['MACARRAO', 'MACARRÃO', 'ESPAGUETE', 'SPAGHETTI', 'PARAFUSO', 'PENNE', 'LASANHA', 'MIOJO', 'MASSA'] },
+  { grupo: 'Óleos & Azeites', icone: '🫒', termos: ['OLEO', 'ÓLEO', 'AZEITE', 'MANTEIGA', 'MARGARINA'] },
+  { grupo: 'Molhos & Condimentos', icone: '🥫', termos: ['MOLHO', 'EXTRATO', 'TOMATE', 'MAIONESE', 'KETCHUP', 'MOSTARDA', 'VINAGRE', 'SAL REF', 'PIMENTA', 'TEMPERO'] },
+  { grupo: 'Açúcar & Doces', icone: '🍬', termos: ['ACUCAR', 'AÇÚCAR', 'ADOCANTE', 'ADOÇANTE', 'CHOCOLATE', 'BOMBOM', 'GOIABADA', 'DOCE DE LEITE', 'LEITE COND'] },
+  { grupo: 'Biscoitos & Snacks', icone: '🍪', termos: ['BISCOITO', 'BOLACHA', 'SNACK', 'SALGADINHO', 'BATATA PALHA', 'AMENDOIM', 'PIPOCA'] },
+  { grupo: 'Frutas, Verduras & Legumes', icone: '🍎', termos: ['BANANA', 'MACA', 'MAÇÃ', 'LARANJA', 'LIMAO', 'LIMÃO', 'MAMAO', 'MAMÃO', 'MELANCIA', 'UVA', 'CEBOLA', 'ALHO', 'BATATA', 'CENOURA', 'ALFACE', 'HORTIFRUTI'] },
+  { grupo: 'Bebidas & Refrigerantes', icone: '🥤', termos: ['REFRIGERANTE', 'REFRIG', 'COCA', 'GUARANA', 'GUARANÁ', 'SUCO', 'NECTAR', 'NÉCTAR', 'AGUA', 'ÁGUA', 'ISOTONICO', 'ENERGETICO'] },
+  { grupo: 'Cervejas & Alcoólicos', icone: '🍺', termos: ['CERVEJA', 'CERV', 'CHOPP', 'VINHO', 'GIN', 'VODKA', 'WHISKY', 'CACHACA', 'CACHAÇA'] },
+  { grupo: 'Limpeza & Lavanderia', icone: '🧼', termos: ['DETERGENTE', 'SABAO', 'SABÃO', 'LAVA ROUPAS', 'AMACIANTE', 'DESINFETANTE', 'AGUA SANITARIA', 'ÁGUA SANITÁRIA', 'ALVEJANTE', 'ESPONJA', 'MULTIUSO'] },
+  { grupo: 'Papéis & Descartáveis', icone: '🧻', termos: ['PAPEL HIGIENICO', 'PAPEL HIGIÊNICO', 'PAPEL TOALHA', 'GUARDANAPO', 'LENCO', 'LENÇO', 'SACO LIXO'] },
+  { grupo: 'Higiene & Cuidados Pessoais', icone: '🧴', termos: ['SABONETE', 'SHAMPOO', 'CONDICIONADOR', 'DESODORANTE', 'CREME DENTAL', 'PASTA DENTE', 'ESCOVA DENTE', 'ENXAGUANTE', 'FIO DENTAL', 'ABSORVENTE', 'FRALDA'] },
+  { grupo: 'Medicamentos & Farmácia', icone: '💊', termos: ['DIPIRONA', 'PARACETAMOL', 'IBUPROFENO', 'DORFLEX', 'NEOSALDINA', 'ANTIALERGICO', 'VITAMINA', 'COMPRIMIDO', 'GOTAS', 'XAROPE', 'POMADA', 'COLIRIO', 'COLÍRIO'] },
+  { grupo: 'Pets & Animais', icone: '🐶', termos: ['RACAO', 'RAÇÃO', 'PETISCO', 'SACHE', 'SACHÊ', 'TAPETE HIGIENICO', 'AREIA GATO', 'ANTIPULGAS'] },
+];
+
+const MARCAS_CATALOGO_CONHECIDAS = [
+  'PIRACANJUBA', 'BETANIA', 'BETÂNIA', 'ITAMBE', 'ITAMBÉ', 'NINHO', 'NESTLE', 'NESTLÉ',
+  'MOCA', 'MOÇA', 'ITALAC', 'ELEGE', 'ELEGÊ', 'TIROLEZ', 'DANONE', 'POLENGHI', 'VIGOR',
+  'CATUPIRY', 'PRESIDENT', 'PRÉSIDENT', 'REGINA', 'ISU', 'BATAVO', 'PARMALAT',
+  'PULLMAN', 'WICKBOLD', 'PLUS VITA', 'BAUDUCCO', 'VISCONTI', 'MARILAN', 'M. DIAS BRANCO',
+  'FORTALEZA', 'PIRAQUE', 'PIRAQUÊ', 'ADRIA', 'VITARELLA', 'RICHESTER', 'SEVEN BOYS', 'NUTRELLA',
+  'BARILLA', 'RENATA', 'DONA BENTA', 'SANTA CLARA', 'PILAO', 'PILÃO', '3 CORACOES', '3 CORAÇÕES',
+  'MELITTA', 'CABOCLO', "L'OR", 'LOR', 'NESCAFE', 'NESCAFÉ', 'TIO JOAO', 'TIO JOÃO', 'CAMIL',
+  'PRATO FINO', 'KICALDO', 'UNIAO', 'UNIÃO', 'LIZA', 'SOYA', 'QUALY', 'CLAYBOM', 'DORIANA',
+  'SADIA', 'PERDIGAO', 'PERDIGÃO', 'SEARA', 'FRIBOI', 'SWIFT', 'AURORA', 'MONTANA',
+  'HEINZ', 'HELLMANNS', "HELLMANN'S", 'QUERO', 'FUGINI', 'KNORR', 'MAGGI',
+  'MEDLEY', 'EMS', 'EUROFARMA', 'NEO QUIMICA', 'NEO QUÍMICA', 'ACHE', 'ACHÉ', 'SANOFI',
+  'BAYER', 'LEGRAND', 'TEUTO', 'CIMED', 'GEOLAB',
+  'COLGATE', 'ORAL-B', 'ORAL B', 'SORRISO', 'SENSODYNE', 'DOVE', 'REXONA', 'NIVEA', 'NÍVEA',
+  'PROTEX', 'PANTENE', 'SEDA', 'ELSEVE', "L'OREAL", 'LOREAL', 'TRESEMME', 'TRESEMMÉ',
+  'YPE', 'YPÊ', 'OMO', 'BRILHANTE', 'ARIEL', 'DOWNY', 'COMFORT', 'VEJA', 'CIF', 'BOMBRIL',
+  'COCA-COLA', 'COCA COLA', 'PEPSI', 'GUARANA ANTARCTICA', 'GUARANÁ', 'FANTA', 'SPRITE',
+  'HEINEKEN', 'STELLA ARTOIS', 'STELLA', 'BRAHMA', 'SKOL', 'AMBEV', 'DEL VALLE',
+  'PEDIGREE', 'WHISKAS', 'GOLDEN', 'PREMIER', 'PREMIÊR', 'ROYAL CANIN', 'SPECIAL DOG',
+  'PURINA', 'MAGNUS'
+];
+
+const extrairGrupoEMarcaDoItem = (descricaoRaw) => {
+  const desc = String(descricaoRaw || '').toUpperCase();
+  let grupoEncontrado = null;
+  for (const r of REGRAS_GRUPOS_PRODUTOS) {
+    if (r.termos.some((t) => desc.includes(t))) {
+      grupoEncontrado = r;
+      break;
+    }
+  }
+
+  let marcaEncontrada = null;
+  for (const m of MARCAS_CATALOGO_CONHECIDAS) {
+    const escaped = m.replace(/[.*+?^$\{}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`\\b${escaped}\\b`, 'i');
+    if (regex.test(desc)) {
+      marcaEncontrada = m;
+      break;
+    }
+  }
+
+  if (!marcaEncontrada) {
+    const palavras = desc
+      .replace(/[0-9.,]+(G|KG|ML|L|UN|PC|PCT|CX|TP|M)\\b/gi, '')
+      .replace(/[^A-ZÀ-Ú\\s]/gi, ' ')
+      .trim()
+      .split(/\\s+/)
+      .filter(
+        (p) =>
+          p.length >= 3 &&
+          ![
+            'INT',
+            'INTEGRAL',
+            'DESN',
+            'DESNATADO',
+            'TRAD',
+            'TRADICIONAL',
+            'PCT',
+            'UND',
+            'UNIDADE',
+            'UHT',
+            'TIPO',
+            'TIPO1',
+            'ORIGINAL',
+            'SABOR',
+            'LIGHT',
+            'ZERO',
+          ].includes(p)
+      );
+    if (palavras.length >= 2) {
+      marcaEncontrada = palavras[palavras.length - 1];
+    }
+  }
+
+  const marcaFormatada = marcaEncontrada
+    ? marcaEncontrada.charAt(0).toUpperCase() + marcaEncontrada.slice(1).toLowerCase()
+    : 'Genérico / Outra';
+
+  return {
+    grupo: grupoEncontrado ? grupoEncontrado.grupo : 'Outros Produtos',
+    icone: grupoEncontrado ? grupoEncontrado.icone : '📦',
+    marca: marcaFormatada,
+  };
+};
+
+
+
+// ==========================================
+// COMPONENTE: GRÁFICO DE VARIAÇÃO DE PREÇOS AO LONGO DO TEMPO POR MARCA
+// ==========================================
+const CORES_PALETA_MARCAS = [
+  '#059669', // emerald
+  '#6366f1', // indigo
+  '#f59e0b', // amber
+  '#ec4899', // pink
+  '#06b6d4', // cyan
+  '#8b5cf6', // purple
+  '#f97316', // orange
+  '#3b82f6', // blue
+  '#14b8a6', // teal
+  '#e11d48', // rose
+];
+
+function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBrandFilter }) {
+  const [hoveredPoint, setHoveredPoint] = useState(null);
+
+  const marcasVisiveis =
+    activeBrandFilter && activeBrandFilter !== 'TODAS'
+      ? grupoData.marcas.filter((m) => m.marca === activeBrandFilter)
+      : grupoData.marcas;
+
+  // Junta todos os pontos de compra das marcas visíveis
+  const pontos = [];
+  marcasVisiveis.forEach((m, idxMarca) => {
+    const cor = CORES_PALETA_MARCAS[idxMarca % CORES_PALETA_MARCAS.length];
+    m.compras.forEach((c) => {
+      pontos.push({ ...c, cor, marca: m.marca });
+    });
+  });
+
+  if (pontos.length === 0) {
+    return (
+      <div className="p-4 text-center text-xs text-slate-400 bg-slate-50 rounded-xl">
+        Sem dados suficientes para gerar o gráfico de preços.
+      </div>
+    );
+  }
+
+  // Ordena cronologicamente
+  pontos.sort((a, b) => a.data.localeCompare(b.data));
+
+  // Extrai datas únicas
+  const datasUnicas = Array.from(new Set(pontos.map((p) => p.data))).sort();
+  const precos = pontos.map((p) => p.preco);
+  const minPreco = Math.min(...precos);
+  const maxPreco = Math.max(...precos);
+  const diffPreco = maxPreco - minPreco || minPreco * 0.2 || 1;
+
+  // Dimensões SVG
+  const width = 560;
+  const height = 190;
+  const padLeft = 65;
+  const padRight = 25;
+  const padTop = 20;
+  const padBottom = 35;
+  const chartW = width - padLeft - padRight;
+  const chartH = height - padTop - padBottom;
+
+  const getX = (dataStr) => {
+    if (datasUnicas.length <= 1) return padLeft + chartW / 2;
+    const idx = datasUnicas.indexOf(dataStr);
+    return padLeft + (idx / (datasUnicas.length - 1)) * chartW;
+  };
+
+  const getY = (preco) => {
+    const norm = (preco - (minPreco - diffPreco * 0.12)) / (diffPreco * 1.24);
+    return padTop + chartH - Math.max(0, Math.min(1, norm)) * chartH;
+  };
+
+  return (
+    <div className="space-y-3">
+      {/* SELETOR RÁPIDO DE MARCAS DO GRUPO */}
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        <span className="text-slate-500 font-semibold mr-1">Filtrar Marca:</span>
+        <button
+          type="button"
+          onClick={() => onSelectBrandFilter('TODAS')}
+          className={`px-2.5 py-1 rounded-lg font-bold text-xs transition cursor-pointer ${
+            !activeBrandFilter || activeBrandFilter === 'TODAS'
+              ? 'bg-slate-900 text-white shadow-xs'
+              : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+          }`}
+        >
+          Todas as Marcas ({grupoData.marcas.length})
+        </button>
+        {grupoData.marcas.map((m, idx) => {
+          const cor = CORES_PALETA_MARCAS[idx % CORES_PALETA_MARCAS.length];
+          const isSelected = activeBrandFilter === m.marca;
+          return (
+            <button
+              key={m.marca}
+              type="button"
+              onClick={() => onSelectBrandFilter(m.marca)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer border ${
+                isSelected
+                  ? 'border-slate-800 bg-slate-800 text-white shadow-xs'
+                  : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+              }`}
+            >
+              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: cor }} />
+              <span>
+                {m.marca} ({formatCurrency(m.ultimoPreco)})
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ÁREA DO GRÁFICO SVG RESPONSIVO */}
+      <div className="w-full overflow-x-auto bg-slate-50/70 rounded-2xl p-3 border border-slate-200/80">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="w-full h-44 overflow-visible select-none"
+        >
+          {/* LINHAS DE GRADE HORIZONTAIS */}
+          {[0, 0.5, 1].map((pct, idx) => {
+            const valor = minPreco + (maxPreco - minPreco) * pct;
+            const y = getY(valor);
+            return (
+              <g key={idx}>
+                <line
+                  x1={padLeft}
+                  y1={y}
+                  x2={width - padRight}
+                  y2={y}
+                  stroke="#cbd5e1"
+                  strokeDasharray="3 3"
+                  strokeWidth="1"
+                />
+                <text
+                  x={padLeft - 8}
+                  y={y + 3.5}
+                  textAnchor="end"
+                  fontSize="10"
+                  fill="#64748b"
+                  fontWeight="600"
+                >
+                  {formatCurrency(valor)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* LINHAS DO TEMPO POR MARCA */}
+          {marcasVisiveis.map((m, idxMarca) => {
+            const cor = CORES_PALETA_MARCAS[idxMarca % CORES_PALETA_MARCAS.length];
+            const pts = m.compras.map((c) => `${getX(c.data)},${getY(c.preco)}`).join(' ');
+            return (
+              <g key={m.marca}>
+                {m.compras.length > 1 && (
+                  <polyline
+                    fill="none"
+                    stroke={cor}
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    points={pts}
+                  />
+                )}
+                {m.compras.map((c, idxPonto) => {
+                  const cx = getX(c.data);
+                  const cy = getY(c.preco);
+                  const isHovered =
+                    hoveredPoint &&
+                    hoveredPoint.descricao === c.descricao &&
+                    hoveredPoint.data === c.data;
+                  return (
+                    <g
+                      key={idxPonto}
+                      className="cursor-pointer"
+                      onClick={() => setHoveredPoint(c)}
+                      onMouseEnter={() => setHoveredPoint(c)}
+                    >
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={isHovered ? 7 : 4.5}
+                        fill={cor}
+                        stroke="#ffffff"
+                        strokeWidth="2"
+                        className="transition-all"
+                      />
+                    </g>
+                  );
+                })}
+              </g>
+            );
+          })}
+
+          {/* EIXO X: DATAS */}
+          {datasUnicas.map((dStr, idx) => {
+            const cx = getX(dStr);
+            const partes = dStr.split('-');
+            const d = partes[2] || '01';
+            const m = partes[1] || '01';
+            return (
+              <text
+                key={idx}
+                x={cx}
+                y={height - 10}
+                textAnchor="middle"
+                fontSize="10"
+                fill="#64748b"
+                fontWeight="600"
+              >
+                {`${d}/${m}`}
+              </text>
+            );
+          })}
+        </svg>
+      </div>
+
+      {/* DETALHE DO PONTO SELECIONADO / TOOLTIP INTERATIVO */}
+      {hoveredPoint && (
+        <div className="p-3 rounded-xl bg-slate-900 text-white text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-md animate-in fade-in duration-150">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-emerald-400">{hoveredPoint.marca}</span>
+              <span className="text-slate-400">•</span>
+              <span className="text-slate-200 truncate max-w-sm">{hoveredPoint.descricao}</span>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Comprado em {formatDateBR(hoveredPoint.data)} • Loja: {hoveredPoint.loja}
+            </p>
+          </div>
+          <div className="text-right shrink-0">
+            <span className="text-sm font-bold text-emerald-400">
+              {formatCurrency(hoveredPoint.preco)}
+            </span>
+            <span className="text-[11px] text-slate-300"> /{hoveredPoint.unidade}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   // Aba inicial: Resumo do Mês ('resumo')
   const [activeTab, setActiveTab] = useState('resumo');
@@ -1283,6 +1644,10 @@ export default function App() {
   // ==========================================
   const [statsSearch, setStatsSearch] = useState('');
   const [statsCategoryFilter, setStatsCategoryFilter] = useState('TODAS');
+  const [viewModeEstatisticas, setViewModeEstatisticas] = useState('AGRUPADOS');
+  const [statsGroupSearch, setStatsGroupSearch] = useState('');
+  const [statsGroupCategoryFilter, setStatsGroupCategoryFilter] = useState('TODOS');
+  const [brandFilterByGroup, setBrandFilterByGroup] = useState({});
   const [statsSortBy, setStatsSortBy] = useState('MAIS_COMPRADOS');
 
   const estatisticasItensCompleta = useMemo(() => {
@@ -7329,234 +7694,713 @@ ${JSON.stringify(itensDaNota)}`,
           ========================================== */}
           {activeTab === 'estatisticas' && (
             <div className="space-y-6">
-              {/* CARDS DE DESTAQUE DAS ESTATÍSTICAS */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-emerald-700">
-                    Item Mais Comprado
-                  </span>
-                  <p className="text-base font-bold text-slate-900 mt-1.5 truncate">
-                    {resumoEstatisticas.maisComprado
-                      ? resumoEstatisticas.maisComprado.descricao_item
-                      : 'Nenhum item'}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">
-                    {resumoEstatisticas.maisComprado
-                      ? `Comprado ${resumoEstatisticas.maisComprado.vezes_comprado}x • ${resumoEstatisticas.maisComprado.frequencia_texto}`
-                      : '-'}
-                  </p>
+              {/* SELETOR DE MODO DE VISUALIZAÇÃO: AGRUPADOS VS ITENS INDIVIDUAIS */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-2 shadow-2xs flex flex-col sm:flex-row items-center justify-between gap-3">
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <button
+                    type="button"
+                    onClick={() => setViewModeEstatisticas('AGRUPADOS')}
+                    className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                      viewModeEstatisticas === 'AGRUPADOS'
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'bg-slate-50 hover:bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    <span>🏷️ Agrupamento por Tipos de Produtos &amp; Marcas</span>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[11px] ${
+                        viewModeEstatisticas === 'AGRUPADOS'
+                          ? 'bg-emerald-700 text-white'
+                          : 'bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      {estatisticasGruposProdutos.length}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setViewModeEstatisticas('ITENS_INDIVIDUAIS')}
+                    className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                      viewModeEstatisticas === 'ITENS_INDIVIDUAIS'
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'bg-slate-50 hover:bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    <span>📋 Todos os Itens Individuais</span>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[11px] ${
+                        viewModeEstatisticas === 'ITENS_INDIVIDUAIS'
+                          ? 'bg-emerald-700 text-white'
+                          : 'bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      {resumoEstatisticas.totalItensUnicos}
+                    </span>
+                  </button>
                 </div>
 
-                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-indigo-700">
-                    Produtos Únicos Analisados
-                  </span>
-                  <p className="text-2xl font-bold text-slate-900 mt-1">
-                    {resumoEstatisticas.totalItensUnicos}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">
-                    {resumoEstatisticas.itensRecorrentes} item(ns) com compra recorrente (2+ vezes)
-                  </p>
-                </div>
-
-                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-amber-700">
-                    Maior Gasto Acumulado
-                  </span>
-                  <p className="text-base font-bold text-slate-900 mt-1.5 truncate">
-                    {resumoEstatisticas.maiorGastoItem
-                      ? resumoEstatisticas.maiorGastoItem.descricao_item
-                      : '-'}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">
-                    {resumoEstatisticas.maiorGastoItem
-                      ? `Total gasto: ${formatCurrency(
-                          resumoEstatisticas.maiorGastoItem.gasto_total
-                        )} (${resumoEstatisticas.maiorGastoItem.vezes_comprado}x)`
-                      : '-'}
-                  </p>
-                </div>
-
-                <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Regra das Listas de Compras
-                  </span>
-                  <p className="text-sm font-bold text-emerald-700 mt-1.5">
-                    Preço Médio &amp; Qtd Média
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">
-                    Suas listas de Supermercado e Farmácia usam automaticamente estas médias
-                  </p>
+                <div className="text-xs text-slate-500 font-medium px-2 text-center sm:text-right">
+                  {viewModeEstatisticas === 'AGRUPADOS'
+                    ? 'Gráficos comparativos de marcas, histórico e recomendações inteligentes de compra'
+                    : 'Ranking analítico detalhado por descrição exata do produto'}
                 </div>
               </div>
 
-              {/* BARRA DE BUSCA, FILTRO DE CATEGORIA E ORDENAÇÃO */}
-              <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4">
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                      <BarChart3 className="w-5 h-5 text-emerald-600" />
-                      <span>
-                        Ranking de Itens Mais Comprados, Frequência e Preço Médio
+              {/* MODO 1: PRODUTOS AGRUPADOS POR TIPO (LEITES, QUEIJOS, PÃES, CARNES, ETC) */}
+              {viewModeEstatisticas === 'AGRUPADOS' ? (
+                <div className="space-y-6">
+                  {/* CARDS DE DESTAQUE ESTRATÉGICO DOS GRUPOS */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-emerald-700">
+                        Grupos Mapeados
                       </span>
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Acompanhe com que frequência cada produto é comprado, a quantidade média por compra e o preço médio histórico.
-                    </p>
+                      <p className="text-2xl font-bold text-slate-900 mt-1">
+                        {resumoGrupos.totalGrupos} categorias
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Leites, Queijos, Pães, Carnes, Bebidas, Higiene e mais
+                      </p>
+                    </div>
+
+                    <div className="bg-white rounded-2xl p-5 border border-rose-200 bg-rose-50/20 shadow-2xs">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-rose-700 flex items-center gap-1.5">
+                        <span>🚨 Maior Aumento Detectado</span>
+                      </span>
+                      {resumoGrupos.maiorAumentoGeral ? (
+                        <>
+                          <p className="text-base font-bold text-slate-900 mt-1.5 truncate">
+                            {resumoGrupos.maiorAumentoGeral.grupo}: {resumoGrupos.maiorAumentoGeral.marca}
+                          </p>
+                          <p className="text-xs text-rose-600 font-semibold mt-1">
+                            +{resumoGrupos.maiorAumentoGeral.variacaoPercentual}% ({formatCurrency(resumoGrupos.maiorAumentoGeral.primeiroPreco)} ➔ {formatCurrency(resumoGrupos.maiorAumentoGeral.ultimoPreco)})
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-xs text-slate-400 mt-2">Sem aumentos expressivos</p>
+                      )}
+                    </div>
+
+                    <div className="bg-white rounded-2xl p-5 border border-emerald-200 bg-emerald-50/20 shadow-2xs">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-emerald-700 flex items-center gap-1.5">
+                        <span>💡 Maior Oportunidade / Economia</span>
+                      </span>
+                      {resumoGrupos.melhorEconomiaGeral ? (
+                        <>
+                          <p className="text-base font-bold text-slate-900 mt-1.5 truncate">
+                            {resumoGrupos.melhorEconomiaGeral.grupo}
+                          </p>
+                          <p className="text-xs text-emerald-700 font-semibold mt-1">
+                            {resumoGrupos.melhorEconomiaGeral.marcaEconomica} vs {resumoGrupos.melhorEconomiaGeral.marcaCara} (Economia de {resumoGrupos.melhorEconomiaGeral.economiaPct}% • {formatCurrency(resumoGrupos.melhorEconomiaGeral.diferencaReais)}/un)
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-xs text-slate-400 mt-2">Compare marcas nos grupos abaixo</p>
+                      )}
+                    </div>
+
+                    <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-indigo-700">
+                        Grupo Mais Frequente
+                      </span>
+                      <p className="text-base font-bold text-slate-900 mt-1.5 truncate">
+                        {resumoGrupos.grupoMaisFrequente
+                          ? `${resumoGrupos.grupoMaisFrequente.icone} ${resumoGrupos.grupoMaisFrequente.grupo}`
+                          : '-'}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {resumoGrupos.grupoMaisFrequente
+                          ? `${resumoGrupos.grupoMaisFrequente.totalItens} compras • ${formatCurrency(resumoGrupos.grupoMaisFrequente.gastoTotal)} gastos`
+                          : '-'}
+                      </p>
+                    </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2">
-                    <select
-                      value={statsCategoryFilter}
-                      onChange={(e) => setStatsCategoryFilter(e.target.value)}
-                      className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-slate-50 text-slate-800"
-                    >
-                      <option value="TODAS">Todas as Categorias</option>
-                      <option value="Alimentação & Supermercado">
-                        Somente Supermercado
-                      </option>
-                      <option value="Saúde & Farmácia">Somente Farmácia</option>
-                      <option value="DEMAIS">Demais Itens</option>
-                    </select>
+                  {/* BARRA DE PESQUISA E FILTROS RÁPIDOS POR CATEGORIA */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                          <BarChart3 className="w-5 h-5 text-emerald-600" />
+                          <span>Análise Inteligente por Tipos de Produtos e Marcas</span>
+                        </h3>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Acompanhe gráficos de variação de preços de marcas, alertas de aumento e recomendações de compra.
+                        </p>
+                      </div>
 
-                    <select
-                      value={statsSortBy}
-                      onChange={(e) => setStatsSortBy(e.target.value)}
-                      className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-slate-50 text-slate-800"
-                    >
-                      <option value="MAIS_COMPRADOS">
-                        Ordenar: Mais Comprados (Frequência)
-                      </option>
-                      <option value="MENOR_CICLO">
-                        Ordenar: Menor Intervalo de Dias
-                      </option>
-                      <option value="MAIOR_GASTO">
-                        Ordenar: Maior Gasto Acumulado
-                      </option>
-                      <option value="PRECO_MEDIO">
-                        Ordenar: Maior Preço Médio
-                      </option>
-                      <option value="ALFABETICA">Ordenar: Nome (A-Z)</option>
-                    </select>
+                      <div className="relative w-full sm:w-72">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          placeholder="Buscar grupo, marca ou produto..."
+                          value={statsGroupSearch}
+                          onChange={(e) => setStatsGroupSearch(e.target.value)}
+                          className="w-full pl-10 pr-4 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* FILTROS RÁPIDOS DE GRUPOS EM FORMA DE CHIPS */}
+                    <div className="flex items-center gap-1.5 overflow-x-auto pb-1 pt-1 no-scrollbar text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setStatsGroupCategoryFilter('TODOS')}
+                        className={`px-3 py-1.5 rounded-xl font-bold whitespace-nowrap transition cursor-pointer ${
+                          statsGroupCategoryFilter === 'TODOS'
+                            ? 'bg-slate-900 text-white shadow-xs'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
+                      >
+                        Todos os Grupos ({estatisticasGruposProdutos.length})
+                      </button>
+                      {estatisticasGruposProdutos.map((g) => {
+                        const isSelected = statsGroupCategoryFilter === g.grupo;
+                        return (
+                          <button
+                            key={g.grupo}
+                            type="button"
+                            onClick={() =>
+                              setStatsGroupCategoryFilter(isSelected ? 'TODOS' : g.grupo)
+                            }
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-semibold whitespace-nowrap transition cursor-pointer border ${
+                              isSelected
+                                ? 'border-emerald-600 bg-emerald-50 text-emerald-800 shadow-2xs font-bold'
+                                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                            }`}
+                          >
+                            <span>{g.icone}</span>
+                            <span>{g.grupo}</span>
+                            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-600 font-bold">
+                              {g.totalItens}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
 
-                <div className="relative">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    placeholder="Filtrar estatísticas por nome do produto, categoria ou estabelecimento..."
-                    value={statsSearch}
-                    onChange={(e) => setStatsSearch(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-              </div>
+                  {/* LISTAGEM DOS CARDS DE GRUPOS COM GRÁFICOS E RECOMENDAÇÕES */}
+                  {estatisticasGruposFiltrados.length === 0 ? (
+                    <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-2xs">
+                      <p className="text-3xl mb-2">🔍</p>
+                      <h4 className="text-base font-bold text-slate-800">
+                        Nenhum grupo de produto encontrado
+                      </h4>
+                      <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                        Tente limpar os filtros de busca ou importar novas notas fiscais para enriquecer o histórico.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStatsGroupSearch('');
+                          setStatsGroupCategoryFilter('TODOS');
+                        }}
+                        className="mt-4 px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 transition cursor-pointer"
+                      >
+                        Limpar Filtros
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      {estatisticasGruposFiltrados.map((grupo) => {
+                        const activeBrandFilter = brandFilterByGroup[grupo.grupo] || 'TODAS';
+                        const isFarma = grupo.categoria_item === 'Saúde & Farmácia';
 
-              {/* TABELA / LISTA DE ESTATÍSTICAS DOS ITENS */}
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
-                {estatisticasFiltradas.length === 0 ? (
-                  <div className="p-10 text-center text-slate-400 text-sm">
-                    Nenhum item encontrado para gerar estatísticas.
-                  </div>
-                ) : (
-                  <div className="divide-y divide-slate-100">
-                    {estatisticasFiltradas.map((stat, idx) => {
-                      const isFarma = stat.categoria_item === 'Saúde & Farmácia';
-                      return (
-                        <div
-                          key={stat.chave}
-                          className="p-4 sm:px-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4 hover:bg-slate-50/80 transition"
-                        >
-                          <div className="flex items-start gap-3 min-w-0">
-                            <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">
-                              #{idx + 1}
-                            </div>
-
-                            <div className="space-y-1 min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="font-bold text-slate-900 text-sm">
-                                  {stat.descricao_item}
-                                </p>
-                                <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md text-[11px] font-medium">
-                                  {stat.categoria_item}
-                                </span>
-                                <span className="bg-indigo-50 text-indigo-700 px-2.5 py-0.5 rounded-full text-[11px] font-bold">
-                                  🔄 Comprado {stat.vezes_comprado}x
-                                </span>
-                                <span className="bg-emerald-50 text-emerald-700 px-2.5 py-0.5 rounded-full text-[11px] font-semibold">
-                                  ⏱️ {stat.frequencia_texto}
-                                </span>
+                        return (
+                          <div
+                            key={grupo.grupo}
+                            className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden"
+                          >
+                            {/* CABEÇALHO DO GRUPO */}
+                            <div className="p-5 sm:px-6 bg-slate-50/60 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                              <div className="flex items-center gap-3">
+                                <div className="w-12 h-12 rounded-2xl bg-white border border-slate-200 shadow-2xs flex items-center justify-center text-2xl shrink-0">
+                                  {grupo.icone}
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <h4 className="text-lg font-bold text-slate-900">
+                                      {grupo.grupo}
+                                    </h4>
+                                    <span className="bg-emerald-100 text-emerald-800 text-[11px] font-bold px-2 py-0.5 rounded-full">
+                                      {grupo.marcas.length} {grupo.marcas.length === 1 ? 'marca' : 'marcas'}
+                                    </span>
+                                  </div>
+                                  <p className="text-xs text-slate-500 mt-0.5">
+                                    {grupo.totalItens} compra(s) registradas • Total investido: {formatCurrency(grupo.gastoTotal)} • Preço Médio do Grupo: <strong className="text-slate-800">{formatCurrency(grupo.precoMedioGrupo)}</strong> /{grupo.unidadePrincipal}
+                                  </p>
+                                </div>
                               </div>
 
-                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
-                                <span>
-                                  📦 Qtd Média por Compra:{' '}
-                                  <strong className="text-slate-800">
-                                    {stat.quantidade_media} {stat.unidade}
-                                  </strong>{' '}
-                                  (Total acumulado: {stat.quantidade_total} {stat.unidade})
-                                </span>
-                                <span>•</span>
-                                <span>
-                                  Última compra:{' '}
-                                  <strong>{formatDateBR(stat.ultima_data)}</strong>
-                                </span>
-                                {stat.estabelecimentos.length > 0 && (
-                                  <>
-                                    <span>•</span>
-                                    <span className="truncate max-w-xs">
-                                      Lojas: {stat.estabelecimentos.join(', ')}
+                              <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const itemExemplo = grupo.marcas[0];
+                                    if (itemExemplo) {
+                                      addFromCatalogToShoppingList(
+                                        {
+                                          descricao_item: grupo.grupo,
+                                          quantidade_media: 1,
+                                          preco_medio: grupo.sugestaoCompra
+                                            ? grupo.sugestaoCompra.ultimoPreco
+                                            : grupo.precoMedioGrupo,
+                                          unidade: grupo.unidadePrincipal,
+                                        },
+                                        isFarma ? 'FARMACIA' : 'SUPERMERCADO'
+                                      );
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition shadow-2xs cursor-pointer"
+                                  title="Adicionar este grupo de produto diretamente à lista de compras"
+                                >
+                                  <Plus className="w-3.5 h-3.5" />
+                                  <span>+ Add à Lista de Compras</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* RECOMENDAÇÕES INTELIGENTES (MAIOR AUMENTO + QUAL MARCA COMPRAR) */}
+                            <div className="p-5 sm:px-6 grid grid-cols-1 md:grid-cols-2 gap-4 border-b border-slate-100 bg-slate-50/20">
+                              {/* BOX 1: MAIOR AUMENTO AO LONGO DO TEMPO */}
+                              <div className="rounded-xl p-4 border border-rose-200 bg-rose-50/40 space-y-1.5">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[11px] font-bold uppercase tracking-wider text-rose-700 flex items-center gap-1.5">
+                                    <span>📈 Maior Aumento ao Longo do Tempo</span>
+                                  </span>
+                                  {grupo.marcaMaiorAumento && (
+                                    <span
+                                      className={`text-xs font-extrabold px-2 py-0.5 rounded-full ${
+                                        grupo.marcaMaiorAumento.variacaoPercentual > 0
+                                          ? 'bg-rose-100 text-rose-800'
+                                          : 'bg-emerald-100 text-emerald-800'
+                                      }`}
+                                    >
+                                      {grupo.marcaMaiorAumento.variacaoPercentual > 0 ? '+' : ''}
+                                      {grupo.marcaMaiorAumento.variacaoPercentual}%
                                     </span>
+                                  )}
+                                </div>
+
+                                {grupo.marcaMaiorAumento ? (
+                                  <>
+                                    <p className="text-sm font-bold text-slate-900">
+                                      Marca: {grupo.marcaMaiorAumento.marca}
+                                    </p>
+                                    <p className="text-xs text-slate-600 leading-relaxed">
+                                      {grupo.marcaMaiorAumento.compras.length >= 2 ? (
+                                        <>
+                                          Iniciou em{' '}
+                                          <strong>{formatCurrency(grupo.marcaMaiorAumento.primeiroPreco)}</strong> ({formatDateBR(grupo.marcaMaiorAumento.primeiraData)}) e subiu para{' '}
+                                          <strong>{formatCurrency(grupo.marcaMaiorAumento.ultimoPreco)}</strong> ({formatDateBR(grupo.marcaMaiorAumento.ultimaData)}). Variação de {grupo.marcaMaiorAumento.variacaoReais > 0 ? '+' : ''}{formatCurrency(grupo.marcaMaiorAumento.variacaoReais)} por {grupo.marcaMaiorAumento.unidade}.
+                                        </>
+                                      ) : (
+                                        <>
+                                          Último preço registrado:{' '}
+                                          <strong>{formatCurrency(grupo.marcaMaiorAumento.ultimoPreco)}</strong> /{grupo.marcaMaiorAumento.unidade} em {formatDateBR(grupo.marcaMaiorAumento.ultimaData)} ({grupo.marcaMaiorAumento.ultimaLoja}). Apenas 1 registro de compra.
+                                        </>
+                                      )}
+                                    </p>
                                   </>
+                                ) : (
+                                  <p className="text-xs text-slate-400">Histórico de aumento insuficiente.</p>
+                                )}
+                              </div>
+
+                              {/* BOX 2: QUAL MARCA DEVO COMPRAR (SUGESTÃO INTELIGENTE) */}
+                              <div className="rounded-xl p-4 border border-emerald-200 bg-emerald-50/40 space-y-1.5">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-800 flex items-center gap-1.5">
+                                    <span>🛒 Qual Marca Devo Comprar?</span>
+                                  </span>
+                                  <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                                    Melhor Escolha
+                                  </span>
+                                </div>
+
+                                {grupo.sugestaoCompra ? (
+                                  <>
+                                    <p className="text-sm font-bold text-emerald-950 flex items-center gap-2">
+                                      <span>Recomendação:</span>
+                                      <span className="text-emerald-700 font-extrabold text-base">
+                                        {grupo.sugestaoCompra.marca}
+                                      </span>
+                                      <span className="text-xs font-normal text-slate-600">
+                                        ({formatCurrency(grupo.sugestaoCompra.ultimoPreco)})
+                                      </span>
+                                    </p>
+                                    <p className="text-xs text-slate-600 leading-relaxed">
+                                      {grupo.sugestaoCompra.motivo}
+                                    </p>
+                                  </>
+                                ) : (
+                                  <p className="text-xs text-slate-400">Dados insuficientes para sugerir.</p>
                                 )}
                               </div>
                             </div>
-                          </div>
 
-                          <div className="flex flex-wrap sm:flex-nowrap items-center justify-between lg:justify-end gap-4 pt-2 lg:pt-0 border-t lg:border-t-0 border-slate-100 shrink-0">
-                            <div className="text-left sm:text-right">
-                              <p className="text-xs text-slate-500">
-                                Preço Médio:{' '}
-                                <strong className="text-emerald-700 text-sm">
-                                  {formatCurrency(stat.preco_medio)}
-                                </strong>{' '}
-                                /{stat.unidade}
-                              </p>
-                              <p className="text-[11px] text-slate-400">
-                                Mín: {formatCurrency(stat.menor_preco)} • Máx:{' '}
-                                {formatCurrency(stat.maior_preco)} • Gasto Total:{' '}
-                                <strong className="text-slate-700">
-                                  {formatCurrency(stat.gasto_total)}
-                                </strong>
-                              </p>
+                            {/* ÁREA DO GRÁFICO INTERATIVO DE PREÇOS AO LONGO DO TEMPO */}
+                            <div className="p-5 sm:px-6 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <h5 className="text-xs font-bold uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
+                                  <span>📈 Variação dos Preços ao Longo do Tempo por Marca</span>
+                                </h5>
+                                <span className="text-[11px] text-slate-400">
+                                  Passe o mouse ou toque nos pontos para ver data e supermercado
+                                </span>
+                              </div>
+
+                              <GraficoVariacaoPrecoMarcas
+                                grupoData={grupo}
+                                activeBrandFilter={activeBrandFilter}
+                                onSelectBrandFilter={(marca) =>
+                                  setBrandFilterByGroup((prev) => ({
+                                    ...prev,
+                                    [grupo.grupo]: marca,
+                                  }))
+                                }
+                              />
                             </div>
 
-                            <button
-                              type="button"
-                              onClick={() =>
-                                addFromCatalogToShoppingList(
-                                  stat,
-                                  isFarma ? 'FARMACIA' : 'SUPERMERCADO'
-                                )
-                              }
-                              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer shrink-0 shadow-2xs"
-                              title={`Adicionar à lista de ${
-                                isFarma ? 'Farmácia' : 'Supermercado'
-                              } com Preço Médio e Quantidade Média`}
-                            >
-                              <Plus className="w-3.5 h-3.5" />
-                              <span>
-                                + Lista {isFarma ? 'Farmácia' : 'Mercado'}
-                              </span>
-                            </button>
+                            {/* TABELA DE COMPARAÇÃO DETALHADA ENTRE AS MARCAS DO GRUPO */}
+                            <div className="p-5 sm:px-6 pt-0 overflow-x-auto">
+                              <h5 className="text-xs font-bold uppercase tracking-wider text-slate-600 mb-3">
+                                Comparativo Detalhado de Marcas
+                              </h5>
+                              <table className="w-full text-left text-xs text-slate-700">
+                                <thead>
+                                  <tr className="border-b border-slate-200 text-slate-400 font-semibold text-[11px] uppercase tracking-wider">
+                                    <th className="py-2.5 pr-3">Marca</th>
+                                    <th className="py-2.5 px-3 text-center">Compras</th>
+                                    <th className="py-2.5 px-3 text-right">1º Preço</th>
+                                    <th className="py-2.5 px-3 text-right">Último Preço</th>
+                                    <th className="py-2.5 px-3 text-center">Variação Histórica</th>
+                                    <th className="py-2.5 px-3 text-right">Preço Médio</th>
+                                    <th className="py-2.5 px-3 text-right">Menor Preço</th>
+                                    <th className="py-2.5 px-3">Última Loja &amp; Data</th>
+                                    <th className="py-2.5 pl-3 text-right">Ação</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                  {grupo.marcas.map((m, idxMarca) => {
+                                    const cor = CORES_PALETA_MARCAS[idxMarca % CORES_PALETA_MARCAS.length];
+                                    const varPositive = m.variacaoPercentual > 0;
+                                    const varNegative = m.variacaoPercentual < 0;
+
+                                    return (
+                                      <tr key={m.marca} className="hover:bg-slate-50/80 transition">
+                                        <td className="py-3 pr-3 font-bold text-slate-900 flex items-center gap-2">
+                                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: cor }} />
+                                          <span>{m.marca}</span>
+                                          {grupo.sugestaoCompra?.marca === m.marca && (
+                                            <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-1.5 py-0.5 rounded-md">
+                                              Recomendada
+                                            </span>
+                                          )}
+                                        </td>
+                                        <td className="py-3 px-3 text-center font-medium">
+                                          {m.totalCompras}x
+                                        </td>
+                                        <td className="py-3 px-3 text-right text-slate-500">
+                                          {formatCurrency(m.primeiroPreco)}
+                                        </td>
+                                        <td className="py-3 px-3 text-right font-bold text-slate-900">
+                                          {formatCurrency(m.ultimoPreco)}
+                                        </td>
+                                        <td className="py-3 px-3 text-center">
+                                          {m.compras.length >= 2 ? (
+                                            <span
+                                              className={`inline-block px-2 py-0.5 rounded-md font-bold text-[11px] ${
+                                                varPositive
+                                                  ? 'bg-rose-50 text-rose-700'
+                                                  : varNegative
+                                                  ? 'bg-emerald-50 text-emerald-700'
+                                                  : 'bg-slate-100 text-slate-600'
+                                              }`}
+                                            >
+                                              {varPositive ? '+' : ''}
+                                              {m.variacaoPercentual}%
+                                            </span>
+                                          ) : (
+                                            <span className="text-slate-400 text-[11px]">-</span>
+                                          )}
+                                        </td>
+                                        <td className="py-3 px-3 text-right font-semibold text-emerald-700">
+                                          {formatCurrency(m.precoMedio)}
+                                        </td>
+                                        <td className="py-3 px-3 text-right text-slate-600 font-medium">
+                                          {formatCurrency(m.menorPreco)}
+                                        </td>
+                                        <td className="py-3 px-3 text-slate-500 text-[11px] max-w-xs truncate">
+                                          <strong>{formatDateBR(m.ultimaData)}</strong> • {m.ultimaLoja}
+                                        </td>
+                                        <td className="py-3 pl-3 text-right">
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              addFromCatalogToShoppingList(
+                                                {
+                                                  descricao_item: `${grupo.grupo} ${m.marca}`,
+                                                  quantidade_media: 1,
+                                                  preco_medio: m.ultimoPreco,
+                                                  unidade: m.unidade,
+                                                },
+                                                isFarma ? 'FARMACIA' : 'SUPERMERCADO'
+                                              )
+                                            }
+                                            className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold text-[11px] transition cursor-pointer"
+                                            title="Adicionar esta marca específica à lista de compras"
+                                          >
+                                            + Lista
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* MODO 2: VISUALIZAÇÃO CLÁSSICA DE TODOS OS ITENS INDIVIDUAIS */
+                <div className="space-y-6">
+                  {/* CARDS DE DESTAQUE DAS ESTATÍSTICAS */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-emerald-700">
+                        Item Mais Comprado
+                      </span>
+                      <p className="text-base font-bold text-slate-900 mt-1.5 truncate">
+                        {resumoEstatisticas.maisComprado
+                          ? resumoEstatisticas.maisComprado.descricao_item
+                          : 'Nenhum item'}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {resumoEstatisticas.maisComprado
+                          ? `Comprado ${resumoEstatisticas.maisComprado.vezes_comprado}x • ${resumoEstatisticas.maisComprado.frequencia_texto}`
+                          : '-'}
+                      </p>
+                    </div>
+
+                    <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-indigo-700">
+                        Produtos Únicos Analisados
+                      </span>
+                      <p className="text-2xl font-bold text-slate-900 mt-1">
+                        {resumoEstatisticas.totalItensUnicos}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {resumoEstatisticas.itensRecorrentes} item(ns) com compra recorrente (2+ vezes)
+                      </p>
+                    </div>
+
+                    <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-amber-700">
+                        Maior Gasto Acumulado
+                      </span>
+                      <p className="text-base font-bold text-slate-900 mt-1.5 truncate">
+                        {resumoEstatisticas.maiorGastoItem
+                          ? resumoEstatisticas.maiorGastoItem.descricao_item
+                          : '-'}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {resumoEstatisticas.maiorGastoItem
+                          ? `Total gasto: ${formatCurrency(
+                              resumoEstatisticas.maiorGastoItem.gasto_total
+                            )} (${resumoEstatisticas.maiorGastoItem.vezes_comprado}x)`
+                          : '-'}
+                      </p>
+                    </div>
+
+                    <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-2xs">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        Regra das Listas de Compras
+                      </span>
+                      <p className="text-sm font-bold text-emerald-700 mt-1.5">
+                        Preço Médio &amp; Qtd Média
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Suas listas de Supermercado e Farmácia usam automaticamente estas médias
+                      </p>
+                    </div>
                   </div>
-                )}
-              </div>
+
+                  {/* BARRA DE BUSCA, FILTRO DE CATEGORIA E ORDENAÇÃO */}
+                  <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4">
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                          <BarChart3 className="w-5 h-5 text-emerald-600" />
+                          <span>
+                            Ranking de Itens Mais Comprados, Frequência e Preço Médio
+                          </span>
+                        </h3>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Acompanhe com que frequência cada produto é comprado, a quantidade média por compra e o preço médio histórico.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          value={statsCategoryFilter}
+                          onChange={(e) => setStatsCategoryFilter(e.target.value)}
+                          className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-slate-50 text-slate-800"
+                        >
+                          <option value="TODAS">Todas as Categorias</option>
+                          <option value="Alimentação & Supermercado">
+                            Somente Supermercado
+                          </option>
+                          <option value="Saúde & Farmácia">Somente Farmácia</option>
+                          <option value="DEMAIS">Demais Itens</option>
+                        </select>
+
+                        <select
+                          value={statsSortBy}
+                          onChange={(e) => setStatsSortBy(e.target.value)}
+                          className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold bg-slate-50 text-slate-800"
+                        >
+                          <option value="MAIS_COMPRADOS">
+                            Ordenar: Mais Comprados (Frequência)
+                          </option>
+                          <option value="MENOR_CICLO">
+                            Ordenar: Menor Intervalo de Dias
+                          </option>
+                          <option value="MAIOR_GASTO">
+                            Ordenar: Maior Gasto Acumulado
+                          </option>
+                          <option value="PRECO_MEDIO">
+                            Ordenar: Maior Preço Médio
+                          </option>
+                          <option value="ALFABETICA">Ordenar: Nome (A-Z)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="relative">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        placeholder="Filtrar estatísticas por nome do produto, categoria ou estabelecimento..."
+                        value={statsSearch}
+                        onChange={(e) => setStatsSearch(e.target.value)}
+                        className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* TABELA / LISTA DE ESTATÍSTICAS DOS ITENS */}
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+                    {estatisticasFiltradas.length === 0 ? (
+                      <div className="p-10 text-center text-slate-400 text-sm">
+                        Nenhum item encontrado para gerar estatísticas.
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-slate-100">
+                        {estatisticasFiltradas.map((stat, idx) => {
+                          const isFarma = stat.categoria_item === 'Saúde & Farmácia';
+                          return (
+                            <div
+                              key={stat.chave}
+                              className="p-4 sm:px-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4 hover:bg-slate-50/80 transition"
+                            >
+                              <div className="flex items-start gap-3 min-w-0">
+                                <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 font-bold text-xs flex items-center justify-center shrink-0 mt-0.5">
+                                  #{idx + 1}
+                                </div>
+
+                                <div className="space-y-1 min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="font-bold text-slate-900 text-sm">
+                                      {stat.descricao_item}
+                                    </p>
+                                    <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md text-[11px] font-medium">
+                                      {stat.categoria_item}
+                                    </span>
+                                    <span className="bg-indigo-50 text-indigo-700 px-2.5 py-0.5 rounded-full text-[11px] font-bold">
+                                      🔄 Comprado {stat.vezes_comprado}x
+                                    </span>
+                                    <span className="bg-emerald-50 text-emerald-700 px-2.5 py-0.5 rounded-full text-[11px] font-semibold">
+                                      ⏱️ {stat.frequencia_texto}
+                                    </span>
+                                  </div>
+
+                                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                                    <span>
+                                      📦 Qtd Média por Compra:{' '}
+                                      <strong className="text-slate-800">
+                                        {stat.quantidade_media} {stat.unidade}
+                                      </strong>{' '}
+                                      (Total acumulado: {stat.quantidade_total} {stat.unidade})
+                                    </span>
+                                    <span>•</span>
+                                    <span>
+                                      Última compra:{' '}
+                                      <strong>{formatDateBR(stat.ultima_data)}</strong>
+                                    </span>
+                                    {stat.estabelecimentos.length > 0 && (
+                                      <>
+                                        <span>•</span>
+                                        <span className="truncate max-w-xs">
+                                          Lojas: {stat.estabelecimentos.join(', ')}
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap sm:flex-nowrap items-center justify-between lg:justify-end gap-4 pt-2 lg:pt-0 border-t lg:border-t-0 border-slate-100 shrink-0">
+                                <div className="text-left sm:text-right">
+                                  <p className="text-xs text-slate-500">
+                                    Preço Médio:{' '}
+                                    <strong className="text-emerald-700 text-sm">
+                                      {formatCurrency(stat.preco_medio)}
+                                    </strong>{' '}
+                                    /{stat.unidade}
+                                  </p>
+                                  <p className="text-[11px] text-slate-400">
+                                    Mín: {formatCurrency(stat.menor_preco)} • Máx:{' '}
+                                    {formatCurrency(stat.maior_preco)} • Gasto Total:{' '}
+                                    <strong className="text-slate-700">
+                                      {formatCurrency(stat.gasto_total)}
+                                    </strong>
+                                  </p>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    addFromCatalogToShoppingList(
+                                      stat,
+                                      isFarma ? 'FARMACIA' : 'SUPERMERCADO'
+                                    )
+                                  }
+                                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer shrink-0 shadow-2xs"
+                                  title={`Adicionar à lista de ${
+                                    isFarma ? 'Farmácia' : 'Supermercado'
+                                  } com Preço Médio e Quantidade Média`}
+                                >
+                                  <Plus className="w-3.5 h-3.5" />
+                                  <span>
+                                    + Lista {isFarma ? 'Farmácia' : 'Mercado'}
+                                  </span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
