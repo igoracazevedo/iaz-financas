@@ -1066,143 +1066,6 @@ function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBran
         </div>
       )}
 
-      {/* MODAL PARA ESCOLHER ENTRE PRODUTOS COM O MESMO APELIDO */}
-      {modalEscolhaProduto && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded-full mb-1">
-                  <Tags className="w-3.5 h-3.5" />
-                  <span>Escolha de Produto por Apelido</span>
-                </div>
-                <h3 className="font-bold text-slate-900 text-base">
-                  {modalEscolhaProduto.grupo?.nomeExibicao}
-                </h3>
-                <p className="text-xs text-slate-500">
-                  Existem {modalEscolhaProduto.grupo?.produtos?.length} produtos cadastrados com este apelido.
-                  {modalEscolhaProduto.itemEmEdicaoId ? ' Escolha qual produto deseja usar neste item da lista:' : ' Escolha qual adicionar à lista:'}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setModalEscolhaProduto(null)}
-                className="p-1 rounded-lg text-slate-400 hover:bg-slate-100 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* AÇÃO RÁPIDA: OPÇÃO MAIS BARATA */}
-            {modalEscolhaProduto.grupo?.produtoMaisBarato && (
-              <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider bg-emerald-200/60 px-2 py-0.5 rounded">
-                    🏆 Opção Mais Econômica
-                  </span>
-                  <p className="font-semibold text-slate-800 text-xs mt-1 truncate">
-                    {modalEscolhaProduto.grupo.produtoMaisBarato.descricao_item}
-                  </p>
-                  <p className="text-xs text-emerald-800 font-bold">
-                    {formatCurrency(modalEscolhaProduto.grupo.precoMin)} /{modalEscolhaProduto.grupo.produtoMaisBarato.unidade}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleSelecionarProdutoApelido(
-                      modalEscolhaProduto.grupo.produtoMaisBarato,
-                      modalEscolhaProduto
-                    )
-                  }
-                  className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer shrink-0 shadow-xs transition"
-                >
-                  Adicionar Mais Barato
-                </button>
-              </div>
-            )}
-
-            {/* LISTA DE TODAS AS OPÇÕES DESTE APELIDO */}
-            <div className="overflow-y-auto space-y-2 flex-1 pr-1">
-              {modalEscolhaProduto.grupo?.produtos?.map((prod, idx) => {
-                const precoUnit =
-                  Number(prod.preco_medio) > 0
-                    ? Number(prod.preco_medio)
-                    : Number(prod.ultimo_valor_unitario) || 0;
-                const isMaisBarato =
-                  prod.chave === modalEscolhaProduto.grupo?.produtoMaisBarato?.chave;
-
-                return (
-                  <div
-                    key={prod.chave || idx}
-                    className={`p-3 rounded-xl border transition flex items-center justify-between gap-3 ${
-                      isMaisBarato
-                        ? 'border-emerald-300 bg-emerald-50/20'
-                        : 'border-slate-200 bg-white hover:bg-slate-50'
-                    }`}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5">
-                        <p className="font-semibold text-slate-900 text-xs">
-                          {prod.descricao_item}
-                        </p>
-                        {isMaisBarato && (
-                          <span className="text-[9px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.2 rounded shrink-0">
-                            Mais Barato
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 mt-1">
-                        <span>
-                          Preço Médio:{' '}
-                          <strong className="text-emerald-700">
-                            {formatCurrency(precoUnit)}
-                          </strong>
-                          /{prod.unidade}
-                        </span>
-                        <span>•</span>
-                        <span>
-                          Qtd Média:{' '}
-                          <strong>
-                            {prod.quantidade_media} {prod.unidade}
-                          </strong>
-                        </span>
-                        <span>•</span>
-                        <span>
-                          Último pago: {formatCurrency(prod.ultimo_valor_unitario)}
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-slate-400 mt-0.5 truncate">
-                        {prod.ultimo_estabelecimento} • Comprado {prod.vezes_comprado}x ({prod.frequencia_texto || 'histórico'})
-                      </p>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleSelecionarProdutoApelido(prod, modalEscolhaProduto)
-                      }
-                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold cursor-pointer shrink-0 transition"
-                    >
-                      {modalEscolhaProduto.itemEmEdicaoId ? 'Usar Este' : 'Escolher Este'}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="pt-2 border-t border-slate-100 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setModalEscolhaProduto(null)}
-                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
-              >
-                Fechar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -7719,29 +7582,39 @@ ${JSON.stringify(itensDaNota)}`,
                             )}
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (grupo.temMultiplos) {
-                                setModalEscolhaProduto({ grupo, itemEmEdicaoId: null });
-                              } else {
-                                addFromCatalogToShoppingList(grupo.produtos[0]);
-                              }
-                            }}
-                            className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-white text-xs font-semibold shrink-0 cursor-pointer transition ${
-                              grupo.temMultiplos
-                                ? 'bg-indigo-600 hover:bg-indigo-700 shadow-xs'
-                                : 'bg-emerald-600 hover:bg-emerald-700'
-                            }`}
-                            title={
-                              grupo.temMultiplos
-                                ? 'Escolher qual produto com este apelido adicionar'
-                                : 'Adicionar com Preço Médio e Quantidade Média'
-                            }
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                            <span>{grupo.temMultiplos ? 'Escolher' : 'Lista'}</span>
-                          </button>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {grupo.temMultiplos ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => addFromCatalogToShoppingList(grupo.produtoMaisBarato)}
+                                  className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold cursor-pointer transition shadow-xs"
+                                  title={`Adicionar opção mais econômica (${grupo.produtoMaisBarato.descricao_item}) com Preço Médio e Qtd Média`}
+                                >
+                                  <Plus className="w-3 h-3" />
+                                  <span>+ Barato</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setModalEscolhaProduto({ grupo, itemEmEdicaoId: null })}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold cursor-pointer transition shadow-xs"
+                                  title="Escolher qual marca/produto com este apelido adicionar"
+                                >
+                                  <span>Escolher</span>
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => addFromCatalogToShoppingList(grupo.produtos[0])}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer transition"
+                                title="Adicionar com Preço Médio e Quantidade Média"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                                <span>Lista</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
                       ))
                     )}
@@ -10176,6 +10049,144 @@ ${JSON.stringify(itensDaNota)}`,
         </div>
       )}
 
+
+      {/* MODAL PARA ESCOLHER ENTRE PRODUTOS COM O MESMO APELIDO */}
+      {modalEscolhaProduto && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4 max-h-[90vh] flex flex-col animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded-full mb-1">
+                  <Tags className="w-3.5 h-3.5" />
+                  <span>Escolha de Produto por Apelido</span>
+                </div>
+                <h3 className="font-bold text-slate-900 text-base">
+                  {modalEscolhaProduto.grupo?.nomeExibicao}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Existem {modalEscolhaProduto.grupo?.produtos?.length} produtos cadastrados com este apelido.
+                  {modalEscolhaProduto.itemEmEdicaoId ? ' Escolha qual produto deseja usar neste item:' : ' Escolha qual produto adicionar à sua lista:'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalEscolhaProduto(null)}
+                className="p-1 rounded-lg text-slate-400 hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* AÇÃO RÁPIDA: OPÇÃO MAIS BARATA */}
+            {modalEscolhaProduto.grupo?.produtoMaisBarato && (
+              <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider bg-emerald-200/60 px-2 py-0.5 rounded">
+                    🏆 Opção Mais Econômica
+                  </span>
+                  <p className="font-semibold text-slate-800 text-xs mt-1 truncate">
+                    {modalEscolhaProduto.grupo.produtoMaisBarato.descricao_item}
+                  </p>
+                  <p className="text-xs text-emerald-800 font-bold">
+                    {formatCurrency(modalEscolhaProduto.grupo.precoMin)} /{modalEscolhaProduto.grupo.produtoMaisBarato.unidade}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSelecionarProdutoApelido(
+                      modalEscolhaProduto.grupo.produtoMaisBarato,
+                      modalEscolhaProduto
+                    )
+                  }
+                  className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer shrink-0 shadow-xs transition"
+                >
+                  {modalEscolhaProduto.itemEmEdicaoId ? 'Usar o Mais Barato' : 'Adicionar Mais Barato'}
+                </button>
+              </div>
+            )}
+
+            {/* LISTA DE TODAS AS OPÇÕES DESTE APELIDO */}
+            <div className="overflow-y-auto space-y-2 flex-1 pr-1">
+              {modalEscolhaProduto.grupo?.produtos?.map((prod, idx) => {
+                const precoUnit =
+                  Number(prod.preco_medio) > 0
+                    ? Number(prod.preco_medio)
+                    : Number(prod.ultimo_valor_unitario) || 0;
+                const isMaisBarato =
+                  prod.chave === modalEscolhaProduto.grupo?.produtoMaisBarato?.chave;
+
+                return (
+                  <div
+                    key={prod.chave || idx}
+                    className={`p-3 rounded-xl border transition flex items-center justify-between gap-3 ${
+                      isMaisBarato
+                        ? 'border-emerald-300 bg-emerald-50/20'
+                        : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <p className="font-semibold text-slate-900 text-xs">
+                          {prod.descricao_item}
+                        </p>
+                        {isMaisBarato && (
+                          <span className="text-[9px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.2 rounded shrink-0">
+                            Mais Barato
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 mt-1">
+                        <span>
+                          Preço Médio:{' '}
+                          <strong className="text-emerald-700">
+                            {formatCurrency(precoUnit)}
+                          </strong>
+                          /{prod.unidade}
+                        </span>
+                        <span>•</span>
+                        <span>
+                          Qtd Média:{' '}
+                          <strong>
+                            {prod.quantidade_media} {prod.unidade}
+                          </strong>
+                        </span>
+                        <span>•</span>
+                        <span>
+                          Último pago: {formatCurrency(prod.ultimo_valor_unitario)}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-0.5 truncate">
+                        {prod.ultimo_estabelecimento} • Comprado {prod.vezes_comprado}x ({prod.frequencia_texto || 'histórico'})
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleSelecionarProdutoApelido(prod, modalEscolhaProduto)
+                      }
+                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold cursor-pointer shrink-0 transition"
+                    >
+                      {modalEscolhaProduto.itemEmEdicaoId ? 'Usar Este' : 'Escolher Este'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setModalEscolhaProduto(null)}
+                className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
