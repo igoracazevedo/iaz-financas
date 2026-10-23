@@ -1359,6 +1359,71 @@ export default function App() {
     }
   };
 
+  const moveShoppingItem = (index, direction) => {
+    setCurrentShoppingList((prev) => {
+      const target = index + direction;
+      if (target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(index, 1);
+      next.splice(target, 0, moved);
+      return next;
+    });
+  };
+
+  const handleDragStart = (e, index) => {
+    setDraggedItemIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDrop = (e, targetIndex) => {
+    e.preventDefault();
+    if (draggedItemIndex === null || draggedItemIndex === targetIndex) return;
+    setCurrentShoppingList((prev) => {
+      const next = [...prev];
+      const [removed] = next.splice(draggedItemIndex, 1);
+      next.splice(targetIndex, 0, removed);
+      return next;
+    });
+    setDraggedItemIndex(null);
+  };
+
+  const handleSalvarApelidoItem = async (itemId, descricaoItem, novoApelido) => {
+    const chave = String(descricaoItem || '').trim().toUpperCase();
+    const apelido = (novoApelido || '').trim();
+
+    const novoMapa = { ...itemApelidosMap };
+    if (apelido) novoMapa[chave] = apelido;
+    else delete novoMapa[chave];
+    setItensApelidosMap(novoMapa);
+    try {
+      localStorage.setItem('iaz_itens_apelidos', JSON.stringify(novoMapa));
+    } catch (e) {
+      console.warn(e);
+    }
+
+    setItensNota((prev) =>
+      prev.map((i) =>
+        String(i.descricao_item || '').trim().toUpperCase() === chave
+          ? { ...i, apelido }
+          : i
+      )
+    );
+
+    if (supabase) {
+      try {
+        await supabase
+          .from('itens_nota')
+          .update({ apelido: apelido || null })
+          .eq('descricao_item', descricaoItem);
+      } catch (err) {
+        console.warn('Apelido salvo apenas localmente:', err);
+      }
+    }
+
+    setModalApelidoItem(null);
+    showNotice(apelido ? `Apelido "${apelido}" salvo!` : 'Apelido removido!');
+  };
+
   const currentMeta = activeListMeta[currentListType];
   const updateCurrentMeta = (patch) => {
     setActiveListMeta((prev) => ({
@@ -1478,6 +1543,17 @@ export default function App() {
   // ==========================================
   // DADOS ENRIQUECIDOS DE ITENS
   // ==========================================
+  const [itemApelidosMap, setItensApelidosMap] = useState(() => {
+    try {
+      const raw = localStorage.getItem('iaz_itens_apelidos');
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  });
+  const [modalApelidoItem, setModalApelidoItem] = useState(null);
+  const [draggedItemIndex, setDraggedItemIndex] = useState(null);
+
   const itensEnriquecidos = useMemo(() => {
     const mapaNotas = new Map(notasFiscais.map((nf) => [nf.id, nf]));
     return itensNota
@@ -1487,6 +1563,11 @@ export default function App() {
         const garantiaInfo = calcularStatusGarantia(dataCompra, item.garantia_meses);
         return {
           ...item,
+          apelido:
+            item.apelido ||
+            itemApelidosMap[item.id] ||
+            itemApelidosMap[String(item.descricao_item || '').trim().toUpperCase()] ||
+            '',
           nota: nf,
           estabelecimento: nf?.estabelecimento || 'Local não informado',
           cnpj: nf?.cnpj || '',
@@ -1501,7 +1582,7 @@ export default function App() {
         }
         return String(b.created_at || '').localeCompare(String(a.created_at || ''));
       });
-  }, [itensNota, notasFiscais]);
+  }, [itensNota, notasFiscais, itemApelidosMap]);
 
   // ==========================================
   // CÁLCULOS DO RESUMO DO MÊS E PAGAMENTOS (CONSIDERANDO DESCONTO: VALOR PAGO = TOTAL - DESCONTO)
@@ -1666,16 +1747,7 @@ export default function App() {
   const [statsGroupSearch, setStatsGroupSearch] = useState('');
   const [statsGroupCategoryFilter, setStatsGroupCategoryFilter] = useState('TODOS');
   const [brandFilterByGroup, setBrandFilterByGroup] = useState({});
-  const [itemApelidosMap, setItensApelidosMap] = useState(() => {
-    try {
-      const raw = localStorage.getItem('iaz_itens_apelidos');
-      return raw ? JSON.parse(raw) : {};
-    } catch (e) {
-      return {};
-    }
-  });
-  const [modalApelidoItem, setModalApelidoItem] = useState(null);
-  const [draggedItemIndex, setDraggedItemIndex] = useState(null);
+
   const [statsSortBy, setStatsSortBy] = useState('MAIS_COMPRADOS');
 
   const estatisticasItensCompleta = useMemo(() => {
@@ -1699,6 +1771,7 @@ export default function App() {
         map.set(chave, {
           chave,
           descricao_item: it.descricao_item,
+          apelido: it.apelido || '',
           unidade: it.unidade || 'un',
           categoria_item: it.categoria_item || 'Outros',
           ultimo_valor_unitario: valUnit,
@@ -2159,6 +2232,7 @@ export default function App() {
     return lista.filter(
       (p) =>
         p.descricao_item.toLowerCase().includes(q) ||
+        (p.apelido && p.apelido.toLowerCase().includes(q)) ||
         p.ultimo_estabelecimento.toLowerCase().includes(q)
     );
   }, [estatisticasItensCompleta, catalogSearch, catalogCategoryFilter]);
@@ -2641,6 +2715,10 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
         itens: Array.isArray(parsed.itens)
           ? parsed.itens.map((it) => ({
               ...it,
+              apelido:
+                it.apelido ||
+                itemApelidosMap[String(it.descricao_item || '').trim().toUpperCase()] ||
+                '',
               garantia_meses: Number(it.garantia_meses) || 0,
             }))
           : [],
@@ -2669,6 +2747,11 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
       .filter((i) => i.nota_id === nf.id)
       .map((i) => ({
         descricao_item: i.descricao_item || '',
+        apelido:
+          i.apelido ||
+          itemApelidosMap[i.id] ||
+          itemApelidosMap[String(i.descricao_item || '').trim().toUpperCase()] ||
+          '',
         quantidade: Number(i.quantidade) || 1,
         unidade: i.unidade || 'UN',
         valor_unitario: Number(i.valor_unitario) || 0,
@@ -3020,6 +3103,7 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
       const itensComColuna = notaObj.itens.map((item) => ({
         nota_id: notaIdFinal,
         descricao_item: item.descricao_item || 'Item',
+        apelido: (item.apelido || '').trim() || null,
         quantidade: Number(item.quantidade) || 1,
         unidade: item.unidade || 'UN',
         valor_unitario: Number(item.valor_unitario) || 0,
@@ -3053,6 +3137,21 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
           .insert(itensSemColunaExtra);
         if (errFallback) throw errFallback;
       }
+    }
+
+    try {
+      const novoMapa = { ...itemApelidosMap };
+      (notaObj.itens || []).forEach((it) => {
+        const ch = String(it.descricao_item || '').trim().toUpperCase();
+        const ap = (it.apelido || '').trim();
+        if (!ch) return;
+        if (ap) novoMapa[ch] = ap;
+        else delete novoMapa[ch];
+      });
+      localStorage.setItem('iaz_itens_apelidos', JSON.stringify(novoMapa));
+      setItensApelidosMap(novoMapa);
+    } catch (e) {
+      console.warn(e);
     }
 
     return notaIdFinal;
@@ -3986,7 +4085,8 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
 
     setter((prev) => {
       const existingIdx = prev.findIndex(
-        (i) => i.descricao_item.trim().toUpperCase() === prod.chave
+        (i) =>
+          String(i.descricao_original || i.descricao_item || '').trim().toUpperCase() === prod.chave
       );
       if (existingIdx >= 0) {
         const updated = [...prev];
@@ -4003,7 +4103,8 @@ Para garantia_meses use 0 para alimentos/farmácia e 12 para eletrônicos.`,
         ...prev,
         {
           id: crypto.randomUUID(),
-          descricao_item: prod.descricao_item,
+          descricao_item: prod.apelido || prod.descricao_item,
+          descricao_original: prod.descricao_item,
           quantidade: qtdMediaPadrao,
           unidade: prod.unidade || 'un',
           valor_unitario: precoMedioPadrao,
@@ -5520,6 +5621,7 @@ ${JSON.stringify(itensDaNota)}`,
                             <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
                               <tr>
                                 <th className="py-2.5 px-2 min-w-[160px]">Item</th>
+                                <th className="py-2.5 px-2 min-w-[150px]">Apelido</th>
                                 <th className="py-2.5 px-2 w-18">Qtd</th>
                                 <th className="py-2.5 px-2 w-16">Unid</th>
                                 <th className="py-2.5 px-2 w-24">V. Unit</th>
@@ -5540,6 +5642,17 @@ ${JSON.stringify(itensDaNota)}`,
                                         handleItemChange(idx, 'descricao_item', e.target.value)
                                       }
                                       className="w-full px-2 py-1 rounded-lg border border-slate-200 text-slate-800 font-medium"
+                                    />
+                                  </td>
+                                  <td className="py-1.5 px-2">
+                                    <input
+                                      type="text"
+                                      placeholder="Ex: Leite Integral"
+                                      value={it.apelido || ''}
+                                      onChange={(e) =>
+                                        handleItemChange(idx, 'apelido', e.target.value)
+                                      }
+                                      className="w-full px-2 py-1 rounded-lg border border-emerald-200 bg-emerald-50/40 text-slate-800 font-semibold"
                                     />
                                   </td>
                                   <td className="py-1.5 px-2">
@@ -6692,7 +6805,34 @@ ${JSON.stringify(itensDaNota)}`,
                                     return (
                                       <tr key={item.id}>
                                         <td className="py-1.5 px-2 font-medium text-slate-800">
-                                          {item.descricao_item}
+                                          <div className="flex items-center gap-1.5">
+                                            <div className="min-w-0">
+                                              {item.apelido ? (
+                                                <>
+                                                  <span className="font-bold text-emerald-800">{item.apelido}</span>
+                                                  <span className="block text-[11px] text-slate-400 font-normal">
+                                                    {item.descricao_item}
+                                                  </span>
+                                                </>
+                                              ) : (
+                                                item.descricao_item
+                                              )}
+                                            </div>
+                                            <button
+                                              type="button"
+                                              onClick={() =>
+                                                setModalApelidoItem({
+                                                  id: item.id,
+                                                  descricao_item: item.descricao_item,
+                                                  apelidoAtual: item.apelido || '',
+                                                })
+                                              }
+                                              className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-slate-200 rounded cursor-pointer shrink-0"
+                                              title="Definir ou alterar apelido deste item"
+                                            >
+                                              <Tag className="w-3 h-3" />
+                                            </button>
+                                          </div>
                                         </td>
                                         <td className="py-1.5 px-2 text-slate-600">
                                           {item.quantidade} {item.unidade}
@@ -7072,9 +7212,30 @@ ${JSON.stringify(itensDaNota)}`,
                           className="p-3 flex items-center justify-between gap-2 hover:bg-slate-50"
                         >
                           <div className="min-w-0">
-                            <p className="font-semibold text-slate-800 text-xs truncate">
-                              {prod.descricao_item}
-                            </p>
+                            <div className="flex items-center gap-1 min-w-0">
+                              <p className="font-semibold text-slate-800 text-xs truncate">
+                                {prod.apelido ? prod.apelido : prod.descricao_item}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setModalApelidoItem({
+                                    id: null,
+                                    descricao_item: prod.descricao_item,
+                                    apelidoAtual: prod.apelido || '',
+                                  })
+                                }
+                                className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-slate-200 rounded cursor-pointer shrink-0"
+                                title="Definir ou alterar apelido deste produto"
+                              >
+                                <Tag className="w-3 h-3" />
+                              </button>
+                            </div>
+                            {prod.apelido && (
+                              <p className="text-[10px] text-slate-400 truncate">
+                                Nota: {prod.descricao_item}
+                              </p>
+                            )}
                             <p className="text-[11px] text-slate-600 truncate">
                               Preço Médio:{' '}
                               <strong className="text-emerald-700">
@@ -7229,17 +7390,41 @@ ${JSON.stringify(itensDaNota)}`,
                       </div>
                     ) : (
                       <div className="divide-y divide-slate-100">
-                        {currentShoppingList.map((item) => {
+                        {currentShoppingList.map((item, idx) => {
                           const subtotal =
                             (Number(item.quantidade) || 0) *
                             (Number(item.valor_unitario) || 0);
                           return (
                             <div
                               key={item.id}
+                              draggable="true"
+                              onDragStart={(e) => handleDragStart(e, idx)}
+                              onDragOver={(e) => e.preventDefault()}
+                              onDrop={(e) => handleDrop(e, idx)}
                               className={`p-3.5 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
                                 item.checked ? 'bg-emerald-50/40' : ''
-                              }`}
+                              } ${draggedItemIndex === idx ? 'opacity-40' : ''}`}
                             >
+                              <div className="flex flex-col shrink-0 text-slate-400 self-start sm:self-center">
+                                <button
+                                  type="button"
+                                  onClick={() => moveShoppingItem(idx, -1)}
+                                  disabled={idx === 0}
+                                  className="p-0.5 hover:bg-slate-200 rounded disabled:opacity-20 cursor-pointer"
+                                  title="Mover para cima"
+                                >
+                                  <ChevronUp className="w-4 h-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => moveShoppingItem(idx, 1)}
+                                  disabled={idx === currentShoppingList.length - 1}
+                                  className="p-0.5 hover:bg-slate-200 rounded disabled:opacity-20 cursor-pointer"
+                                  title="Mover para baixo"
+                                >
+                                  <ChevronDown className="w-4 h-4" />
+                                </button>
+                              </div>
                               <label className="flex items-start gap-3 cursor-pointer flex-1">
                                 <input
                                   type="checkbox"
