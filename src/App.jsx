@@ -828,17 +828,28 @@ const CORES_PALETA_MARCAS = [
 function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBrandFilter }) {
   const [hoveredPoint, setHoveredPoint] = useState(null);
 
+  if (!grupoData || !Array.isArray(grupoData.marcas) || grupoData.marcas.length === 0) {
+    return (
+      <div className="p-4 text-center text-xs text-slate-400 bg-slate-50 rounded-xl">
+        Sem dados de marcas para este grupo.
+      </div>
+    );
+  }
+
   const marcasVisiveis =
     activeBrandFilter && activeBrandFilter !== 'TODAS'
-      ? grupoData.marcas.filter((m) => m.marca === activeBrandFilter)
+      ? grupoData.marcas.filter((m) => m && m.marca === activeBrandFilter)
       : grupoData.marcas;
 
   // Junta todos os pontos de compra das marcas visíveis
   const pontos = [];
   marcasVisiveis.forEach((m, idxMarca) => {
+    if (!m) return;
     const cor = CORES_PALETA_MARCAS[idxMarca % CORES_PALETA_MARCAS.length];
-    m.compras.forEach((c) => {
-      pontos.push({ ...c, cor, marca: m.marca });
+    (m.compras || []).forEach((c) => {
+      if (c && typeof c.preco === 'number' && !isNaN(c.preco)) {
+        pontos.push({ ...c, cor, marca: m.marca });
+      }
     });
   });
 
@@ -850,15 +861,15 @@ function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBran
     );
   }
 
-  // Ordena cronologicamente
-  pontos.sort((a, b) => a.data.localeCompare(b.data));
+  // Ordena cronologicamente com segurança
+  pontos.sort((a, b) => String(a.data || '').localeCompare(String(b.data || '')));
 
-  // Extrai datas únicas
-  const datasUnicas = Array.from(new Set(pontos.map((p) => p.data))).sort();
+  // Extrai datas únicas válidas
+  const datasUnicas = Array.from(new Set(pontos.map((p) => String(p.data || '')))).filter(Boolean).sort();
   const precos = pontos.map((p) => p.preco);
   const minPreco = Math.min(...precos);
   const maxPreco = Math.max(...precos);
-  const diffPreco = maxPreco - minPreco || minPreco * 0.2 || 1;
+  const diffPreco = (maxPreco - minPreco) || (minPreco * 0.2) || 1;
 
   // Dimensões SVG
   const width = 560;
@@ -873,11 +884,12 @@ function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBran
   const getX = (dataStr) => {
     if (datasUnicas.length <= 1) return padLeft + chartW / 2;
     const idx = datasUnicas.indexOf(dataStr);
+    if (idx === -1) return padLeft + chartW / 2;
     return padLeft + (idx / (datasUnicas.length - 1)) * chartW;
   };
 
   const getY = (preco) => {
-    const norm = (preco - (minPreco - diffPreco * 0.12)) / (diffPreco * 1.24);
+    const norm = diffPreco > 0 ? (preco - (minPreco - diffPreco * 0.12)) / (diffPreco * 1.24) : 0.5;
     return padTop + chartH - Math.max(0, Math.min(1, norm)) * chartH;
   };
 
@@ -898,11 +910,12 @@ function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBran
           Todas as Marcas ({grupoData.marcas.length})
         </button>
         {grupoData.marcas.map((m, idx) => {
+          if (!m) return null;
           const cor = CORES_PALETA_MARCAS[idx % CORES_PALETA_MARCAS.length];
           const isSelected = activeBrandFilter === m.marca;
           return (
             <button
-              key={m.marca}
+              key={m.marca || idx}
               type="button"
               onClick={() => onSelectBrandFilter(m.marca)}
               className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer border ${
@@ -957,10 +970,11 @@ function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBran
 
           {/* LINHAS DO TEMPO POR MARCA */}
           {marcasVisiveis.map((m, idxMarca) => {
+            if (!m || !Array.isArray(m.compras)) return null;
             const cor = CORES_PALETA_MARCAS[idxMarca % CORES_PALETA_MARCAS.length];
             const pts = m.compras.map((c) => `${getX(c.data)},${getY(c.preco)}`).join(' ');
             return (
-              <g key={m.marca}>
+              <g key={m.marca || idxMarca}>
                 {m.compras.length > 1 && (
                   <polyline
                     fill="none"
@@ -1004,9 +1018,10 @@ function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBran
           {/* EIXO X: DATAS */}
           {datasUnicas.map((dStr, idx) => {
             const cx = getX(dStr);
-            const partes = dStr.split('-');
-            const d = partes[2] || '01';
-            const m = partes[1] || '01';
+            const partes = String(dStr || '').split('-');
+            const d = partes[2] || '';
+            const m = partes[1] || '';
+            const label = d && m ? `${d}/${m}` : dStr;
             return (
               <text
                 key={idx}
@@ -1017,7 +1032,7 @@ function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBran
                 fill="#64748b"
                 fontWeight="600"
               >
-                {`${d}/${m}`}
+                {label}
               </text>
             );
           })}
@@ -1048,6 +1063,7 @@ function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBran
     </div>
   );
 }
+
 
 export default function App() {
   // Aba inicial: Resumo do Mês ('resumo')
@@ -1855,6 +1871,264 @@ export default function App() {
       maiorGastoItem,
     };
   }, [estatisticasFiltradas]);
+
+  // ==========================================
+  // AGRUPAMENTO DE PRODUTOS, ANÁLISE DE MARCAS E SUGESTÃO INTELIGENTE DE COMPRA
+  // ==========================================
+  const estatisticasGruposProdutos = useMemo(() => {
+    if (!Array.isArray(itensEnriquecidos)) return [];
+
+    const gruposMap = new Map();
+
+    for (const item of itensEnriquecidos) {
+      if (!item) continue;
+      const desc = item.descricao_item || '';
+      const { grupo, icone, marca } = extrairGrupoEMarcaDoItem(desc);
+      const qtd = Number(item.quantidade) > 0 ? Number(item.quantidade) : 1;
+      const preco =
+        Number(item.valor_unitario) > 0
+          ? Number(item.valor_unitario)
+          : Number(item.valor_total) > 0
+          ? Number(item.valor_total) / qtd
+          : 0;
+
+      if (preco <= 0) continue;
+
+      const data = String(item.data_compra || '').split('T')[0] || '2026-01-01';
+
+      if (!gruposMap.has(grupo)) {
+        gruposMap.set(grupo, {
+          grupo,
+          icone,
+          categoria_item: item.categoria_item || 'Alimentação & Supermercado',
+          itensRaw: [],
+          marcasMap: new Map(),
+        });
+      }
+
+      const gObj = gruposMap.get(grupo);
+      const compraEvento = {
+        data,
+        preco,
+        marca,
+        descricao: desc,
+        loja: item.estabelecimento || 'Loja não informada',
+        unidade: item.unidade || 'un',
+        quantidade: qtd,
+        total: Number(item.valor_total) || preco * qtd,
+      };
+      gObj.itensRaw.push(compraEvento);
+
+      if (!gObj.marcasMap.has(marca)) {
+        gObj.marcasMap.set(marca, {
+          marca,
+          compras: [],
+        });
+      }
+      gObj.marcasMap.get(marca).compras.push(compraEvento);
+    }
+
+    const gruposProcessados = [];
+
+    for (const gObj of gruposMap.values()) {
+      gObj.itensRaw.sort((a, b) => String(a.data || '').localeCompare(String(b.data || '')));
+
+      const marcasArray = [];
+      for (const mObj of gObj.marcasMap.values()) {
+        mObj.compras.sort((a, b) => String(a.data || '').localeCompare(String(b.data || '')));
+        const precos = mObj.compras.map((c) => c.preco);
+        const primeiroPreco = precos[0] || 0;
+        const ultimoPreco = precos[precos.length - 1] || primeiroPreco;
+        const menorPreco = Math.min(...precos);
+        const maiorPreco = Math.max(...precos);
+        const precoMedio = Number(
+          (precos.reduce((a, b) => a + b, 0) / precos.length).toFixed(2)
+        );
+        const variacaoReais = Number((ultimoPreco - primeiroPreco).toFixed(2));
+        const variacaoPercentual =
+          primeiroPreco > 0
+            ? Number((((ultimoPreco - primeiroPreco) / primeiroPreco) * 100).toFixed(1))
+            : 0;
+
+        marcasArray.push({
+          marca: mObj.marca,
+          totalCompras: mObj.compras.length,
+          compras: mObj.compras,
+          primeiroPreco,
+          ultimoPreco,
+          menorPreco,
+          maiorPreco,
+          precoMedio,
+          variacaoReais,
+          variacaoPercentual,
+          unidade: mObj.compras[0]?.unidade || 'un',
+          ultimaLoja: mObj.compras[mObj.compras.length - 1]?.loja || 'Loja',
+          ultimaData: mObj.compras[mObj.compras.length - 1]?.data || '',
+          primeiraData: mObj.compras[0]?.data || '',
+          exemploDescricao: mObj.compras[mObj.compras.length - 1]?.descricao || '',
+        });
+      }
+
+      marcasArray.sort((a, b) => b.totalCompras - a.totalCompras);
+
+      // Sugestão 1: Marca com maior aumento ao longo do tempo
+      let marcaMaiorAumento = null;
+      const marcasComHistorico = marcasArray.filter((m) => m.compras && m.compras.length >= 2);
+      if (marcasComHistorico.length > 0) {
+        marcaMaiorAumento = [...marcasComHistorico].sort(
+          (a, b) => b.variacaoPercentual - a.variacaoPercentual
+        )[0];
+      }
+      if (!marcaMaiorAumento && marcasArray.length > 0) {
+        marcaMaiorAumento = [...marcasArray].sort(
+          (a, b) => b.ultimoPreco - a.ultimoPreco
+        )[0];
+      }
+
+      // Sugestão 2: Qual marca devo comprar
+      const marcasOrdenadasPorPrecoRecente = [...marcasArray].sort(
+        (a, b) => a.ultimoPreco - b.ultimoPreco
+      );
+      const marcaMaisEconomica = marcasOrdenadasPorPrecoRecente[0];
+      const marcaMaisCara =
+        marcasOrdenadasPorPrecoRecente[marcasOrdenadasPorPrecoRecente.length - 1];
+
+      let motivoRecomendacao = '';
+      if (
+        marcasArray.length >= 2 &&
+        marcaMaisEconomica &&
+        marcaMaisCara &&
+        marcaMaisEconomica.marca !== marcaMaisCara.marca
+      ) {
+        const economiaReais = Number(
+          (marcaMaisCara.ultimoPreco - marcaMaisEconomica.ultimoPreco).toFixed(2)
+        );
+        const economiaPct =
+          marcaMaisCara.ultimoPreco > 0
+            ? Math.round((economiaReais / marcaMaisCara.ultimoPreco) * 100)
+            : 0;
+        motivoRecomendacao = `Opção mais econômica no momento (${formatCurrency(
+          marcaMaisEconomica.ultimoPreco
+        )} vs ${formatCurrency(marcaMaisCara.ultimoPreco)} da ${
+          marcaMaisCara.marca
+        }). Economia de ${economiaPct}% (${formatCurrency(economiaReais)} por unidade).`;
+      } else if (marcaMaisEconomica) {
+        motivoRecomendacao = `Menor preço registrado neste grupo: ${formatCurrency(
+          marcaMaisEconomica.menorPreco
+        )} (Preço médio histórico da marca: ${formatCurrency(
+          marcaMaisEconomica.precoMedio
+        )}).`;
+      }
+
+      const sugestaoCompra = marcaMaisEconomica
+        ? {
+            marca: marcaMaisEconomica.marca,
+            ultimoPreco: marcaMaisEconomica.ultimoPreco,
+            precoMedio: marcaMaisEconomica.precoMedio,
+            motivo: motivoRecomendacao,
+          }
+        : null;
+
+      const gastoTotal = Number(
+        gObj.itensRaw.reduce((acc, i) => acc + (i.total || 0), 0).toFixed(2)
+      );
+      const precoMedioGrupo = Number(
+        (
+          gObj.itensRaw.reduce((acc, i) => acc + (i.preco || 0), 0) / (gObj.itensRaw.length || 1)
+        ).toFixed(2)
+      );
+
+      gruposProcessados.push({
+        grupo: gObj.grupo,
+        icone: gObj.icone,
+        categoria_item: gObj.categoria_item,
+        totalItens: gObj.itensRaw.length,
+        gastoTotal,
+        precoMedioGrupo,
+        unidadePrincipal: gObj.itensRaw[0]?.unidade || 'un',
+        itensHistorico: gObj.itensRaw,
+        marcas: marcasArray,
+        marcaMaiorAumento,
+        sugestaoCompra,
+      });
+    }
+
+    gruposProcessados.sort((a, b) => b.totalItens - a.totalItens);
+    return gruposProcessados;
+  }, [itensEnriquecidos]);
+
+  // Grupos filtrados pela busca e filtro de categoria
+  const estatisticasGruposFiltrados = useMemo(() => {
+    if (!Array.isArray(estatisticasGruposProdutos)) return [];
+    let lista = [...estatisticasGruposProdutos];
+
+    if (statsGroupCategoryFilter !== 'TODOS') {
+      lista = lista.filter((g) => g.grupo === statsGroupCategoryFilter);
+    }
+
+    const q = (statsGroupSearch || '').trim().toLowerCase();
+    if (q) {
+      lista = lista.filter(
+        (g) =>
+          (g.grupo || '').toLowerCase().includes(q) ||
+          (g.marcas || []).some((m) => (m.marca || '').toLowerCase().includes(q)) ||
+          (g.itensHistorico || []).some((i) => (i.descricao || '').toLowerCase().includes(q))
+      );
+    }
+
+    return lista;
+  }, [estatisticasGruposProdutos, statsGroupSearch, statsGroupCategoryFilter]);
+
+  // Resumo de Inteligência Financeira dos Grupos
+  const resumoGrupos = useMemo(() => {
+    const lista = Array.isArray(estatisticasGruposProdutos) ? estatisticasGruposProdutos : [];
+    const totalGrupos = lista.length;
+    let maiorAumentoGeral = null;
+    let melhorEconomiaGeral = null;
+    let grupoMaisFrequente = lista[0] || null;
+
+    for (const g of lista) {
+      if (
+        g.marcaMaiorAumento &&
+        g.marcaMaiorAumento.variacaoPercentual > 0 &&
+        (!maiorAumentoGeral ||
+          g.marcaMaiorAumento.variacaoPercentual > maiorAumentoGeral.variacaoPercentual)
+      ) {
+        maiorAumentoGeral = {
+          grupo: g.grupo,
+          ...g.marcaMaiorAumento,
+        };
+      }
+
+      if (g.marcas && g.marcas.length >= 2) {
+        const sorted = [...g.marcas].sort((a, b) => a.ultimoPreco - b.ultimoPreco);
+        const barata = sorted[0];
+        const cara = sorted[sorted.length - 1];
+        const dif = Number((cara.ultimoPreco - barata.ultimoPreco).toFixed(2));
+        if (dif > 0 && (!melhorEconomiaGeral || dif > melhorEconomiaGeral.diferencaReais)) {
+          const economiaPct = cara.ultimoPreco > 0 ? Math.round((dif / cara.ultimoPreco) * 100) : 0;
+          melhorEconomiaGeral = {
+            grupo: g.grupo,
+            marcaEconomica: barata.marca,
+            marcaCara: cara.marca,
+            diferencaReais: dif,
+            economiaPct,
+            precoBarata: barata.ultimoPreco,
+            precoCara: cara.ultimoPreco,
+          };
+        }
+      }
+    }
+
+    return {
+      totalGrupos,
+      maiorAumentoGeral,
+      melhorEconomiaGeral,
+      grupoMaisFrequente,
+    };
+  }, [estatisticasGruposProdutos]);
+
+
 
   // Catálogo de produtos únicos para Supermercado ou Farmácia (usando SEMPRE Preço Médio e Quantidade Média)
   const catalogoProdutos = useMemo(() => {
