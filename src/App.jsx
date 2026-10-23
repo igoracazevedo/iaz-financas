@@ -1062,122 +1062,6 @@ function GraficoVariacaoPrecoMarcas({ grupoData, activeBrandFilter, onSelectBran
           </div>
         </div>
       )}
-      {/* MODAL PARA CADASTRAR OU EDITAR APELIDO DO ITEM DA NOTA */}
-      {modalApelidoItem && (
-        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center">
-                  <Tag className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-slate-900 text-sm">
-                    Apelido do Produto
-                  </h3>
-                  <p className="text-[11px] text-slate-500">
-                    Defina um nome amigável para usar nas listas e pesquisas
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setModalApelidoItem(null)}
-                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                  Descrição Original na Nota Fiscal:
-                </label>
-                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-mono text-slate-700 select-all">
-                  {modalApelidoItem.descricao_item}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                  Apelido / Nome Amigável:
-                </label>
-                <input
-                  type="text"
-                  autoFocus
-                  placeholder="Ex: Leite Integral Piracanjuba, Pão de Forma..."
-                  value={modalApelidoItem.apelidoInput ?? (modalApelidoItem.apelidoAtual || '')}
-                  onChange={(e) =>
-                    setModalApelidoItem({
-                      ...modalApelidoItem,
-                      apelidoInput: e.target.value,
-                    })
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleSalvarApelidoItem(
-                        modalApelidoItem.id,
-                        modalApelidoItem.descricao_item,
-                        modalApelidoItem.apelidoInput ?? modalApelidoItem.apelidoAtual
-                      );
-                    }
-                  }}
-                  className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm text-slate-900 focus:outline-none focus:border-emerald-500 font-medium"
-                />
-                <p className="text-[11px] text-slate-400 mt-1">
-                  💡 Este apelido aparecerá no topo do catálogo e na sua lista de compras de Supermercado.
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
-              {modalApelidoItem.apelidoAtual ? (
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleSalvarApelidoItem(
-                      modalApelidoItem.id,
-                      modalApelidoItem.descricao_item,
-                      ''
-                    )
-                  }
-                  className="px-3 py-2 rounded-xl text-xs font-semibold text-rose-600 hover:bg-rose-50 cursor-pointer transition"
-                >
-                  Remover Apelido
-                </button>
-              ) : (
-                <div />
-              )}
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setModalApelidoItem(null)}
-                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleSalvarApelidoItem(
-                      modalApelidoItem.id,
-                      modalApelidoItem.descricao_item,
-                      modalApelidoItem.apelidoInput ?? (modalApelidoItem.apelidoAtual || '')
-                    )
-                  }
-                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs cursor-pointer"
-                >
-                  Salvar Apelido
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
     </div>
   );
 }
@@ -2101,7 +1985,7 @@ export default function App() {
 
       // Sugestão 1: Marca com maior aumento ao longo do tempo
       let marcaMaiorAumento = null;
-      const marcasComHistorico = marcasArray.filter((m) => m.compras && m.compras.length >= 2);
+      const marcasComHistorico = marcasArray.filter((m) => m.compras && m.compras?.length >= 2);
       if (marcasComHistorico.length > 0) {
         marcaMaiorAumento = [...marcasComHistorico].sort(
           (a, b) => b.variacaoPercentual - a.variacaoPercentual
@@ -8159,7 +8043,7 @@ ${JSON.stringify(itensDaNota)}`,
                         Grupos Mapeados
                       </span>
                       <p className="text-2xl font-bold text-slate-900 mt-1">
-                        {resumoGrupos.totalGrupos} categorias
+                        {resumoGrupos?.totalGrupos || 0} categorias
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
                         Leites, Queijos, Pães, Carnes, Bebidas, Higiene e mais
@@ -8173,10 +8057,10 @@ ${JSON.stringify(itensDaNota)}`,
                       {resumoGrupos.maiorAumentoGeral ? (
                         <>
                           <p className="text-base font-bold text-slate-900 mt-1.5 truncate">
-                            {resumoGrupos.maiorAumentoGeral.grupo}: {resumoGrupos.maiorAumentoGeral.marca}
+                            {resumoGrupos?.maiorAumentoGeral?.grupo}: {resumoGrupos?.maiorAumentoGeral?.marca}
                           </p>
                           <p className="text-xs text-rose-600 font-semibold mt-1">
-                            +{resumoGrupos.maiorAumentoGeral.variacaoPercentual}% ({formatCurrency(resumoGrupos.maiorAumentoGeral.primeiroPreco)} ➔ {formatCurrency(resumoGrupos.maiorAumentoGeral.ultimoPreco)})
+                            +{resumoGrupos?.maiorAumentoGeral?.variacaoPercentual}% ({formatCurrency(resumoGrupos?.maiorAumentoGeral?.primeiroPreco)} ➔ {formatCurrency(resumoGrupos?.maiorAumentoGeral?.ultimoPreco)})
                           </p>
                         </>
                       ) : (
@@ -8191,10 +8075,10 @@ ${JSON.stringify(itensDaNota)}`,
                       {resumoGrupos.melhorEconomiaGeral ? (
                         <>
                           <p className="text-base font-bold text-slate-900 mt-1.5 truncate">
-                            {resumoGrupos.melhorEconomiaGeral.grupo}
+                            {resumoGrupos?.melhorEconomiaGeral?.grupo}
                           </p>
                           <p className="text-xs text-emerald-700 font-semibold mt-1">
-                            {resumoGrupos.melhorEconomiaGeral.marcaEconomica} vs {resumoGrupos.melhorEconomiaGeral.marcaCara} (Economia de {resumoGrupos.melhorEconomiaGeral.economiaPct}% • {formatCurrency(resumoGrupos.melhorEconomiaGeral.diferencaReais)}/un)
+                            {resumoGrupos?.melhorEconomiaGeral?.marcaEconomica} vs {resumoGrupos?.melhorEconomiaGeral?.marcaCara} (Economia de {resumoGrupos?.melhorEconomiaGeral?.economiaPct}% • {formatCurrency(resumoGrupos?.melhorEconomiaGeral?.diferencaReais)}/un)
                           </p>
                         </>
                       ) : (
@@ -8208,12 +8092,12 @@ ${JSON.stringify(itensDaNota)}`,
                       </span>
                       <p className="text-base font-bold text-slate-900 mt-1.5 truncate">
                         {resumoGrupos.grupoMaisFrequente
-                          ? `${resumoGrupos.grupoMaisFrequente.icone} ${resumoGrupos.grupoMaisFrequente.grupo}`
+                          ? `${resumoGrupos?.grupoMaisFrequente?.icone} ${resumoGrupos?.grupoMaisFrequente?.grupo}`
                           : '-'}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
                         {resumoGrupos.grupoMaisFrequente
-                          ? `${resumoGrupos.grupoMaisFrequente.totalItens} compras • ${formatCurrency(resumoGrupos.grupoMaisFrequente.gastoTotal)} gastos`
+                          ? `${resumoGrupos?.grupoMaisFrequente?.totalItens} compras • ${formatCurrency(resumoGrupos?.grupoMaisFrequente?.gastoTotal)} gastos`
                           : '-'}
                       </p>
                     </div>
@@ -8392,7 +8276,7 @@ ${JSON.stringify(itensDaNota)}`,
                                       Marca: {grupo.marcaMaiorAumento.marca}
                                     </p>
                                     <p className="text-xs text-slate-600 leading-relaxed">
-                                      {grupo.marcaMaiorAumento.compras.length >= 2 ? (
+                                      {grupo.marcaMaiorAumento?.compras?.length >= 2 ? (
                                         <>
                                           Iniciou em{' '}
                                           <strong>{formatCurrency(grupo.marcaMaiorAumento.primeiroPreco)}</strong> ({formatDateBR(grupo.marcaMaiorAumento.primeiraData)}) e subiu para{' '}
@@ -8512,7 +8396,7 @@ ${JSON.stringify(itensDaNota)}`,
                                           {formatCurrency(m.ultimoPreco)}
                                         </td>
                                         <td className="py-3 px-3 text-center">
-                                          {m.compras.length >= 2 ? (
+                                          {m.compras?.length >= 2 ? (
                                             <span
                                               className={`inline-block px-2 py-0.5 rounded-md font-bold text-[11px] ${
                                                 varPositive
@@ -9450,6 +9334,123 @@ ${JSON.stringify(itensDaNota)}`,
           })}
         </div>
       </nav>
+
+      {/* MODAL PARA CADASTRAR OU EDITAR APELIDO DO ITEM DA NOTA */}
+      {modalApelidoItem && (
+        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center">
+                  <Tag className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">
+                    Apelido do Produto
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Defina um nome amigável para usar nas listas e pesquisas
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalApelidoItem(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                  Descrição Original na Nota Fiscal:
+                </label>
+                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-mono text-slate-700 select-all">
+                  {modalApelidoItem.descricao_item}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  Apelido / Nome Amigável:
+                </label>
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="Ex: Leite Integral Piracanjuba, Pão de Forma..."
+                  value={modalApelidoItem.apelidoInput ?? (modalApelidoItem.apelidoAtual || '')}
+                  onChange={(e) =>
+                    setModalApelidoItem({
+                      ...modalApelidoItem,
+                      apelidoInput: e.target.value,
+                    })
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleSalvarApelidoItem(
+                        modalApelidoItem.id,
+                        modalApelidoItem.descricao_item,
+                        modalApelidoItem.apelidoInput ?? modalApelidoItem.apelidoAtual
+                      );
+                    }
+                  }}
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm text-slate-900 focus:outline-none focus:border-emerald-500 font-medium"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  💡 Este apelido aparecerá no topo do catálogo e na sua lista de compras de Supermercado.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              {modalApelidoItem.apelidoAtual ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSalvarApelidoItem(
+                      modalApelidoItem.id,
+                      modalApelidoItem.descricao_item,
+                      ''
+                    )
+                  }
+                  className="px-3 py-2 rounded-xl text-xs font-semibold text-rose-600 hover:bg-rose-50 cursor-pointer transition"
+                >
+                  Remover Apelido
+                </button>
+              ) : (
+                <div />
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setModalApelidoItem(null)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSalvarApelidoItem(
+                      modalApelidoItem.id,
+                      modalApelidoItem.descricao_item,
+                      modalApelidoItem.apelidoInput ?? (modalApelidoItem.apelidoAtual || '')
+                    )
+                  }
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs cursor-pointer"
+                >
+                  Salvar Apelido
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
